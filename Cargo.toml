@@ -1,0 +1,33 @@
+[package]
+name = "diesel-turso"
+version = "0.1.0"
+edition = "2021"
+authors = ["You"]
+license-file = "LICENSE"
+homepage = "https://github.com/Choochmeque/diesel-turso"
+description = "A Diesel Backend/Connection for Turso Database."
+
+[features]
+default = ["chrono"]
+chrono = ["diesel/chrono", "dep:chrono"]
+bb8 = ["diesel-async/bb8"]
+deadpool = ["diesel-async/deadpool"]
+mobc = ["diesel-async/mobc"]
+r2d2 = [
+    "diesel-async/r2d2",
+    "diesel-async/async-connection-wrapper",
+    "diesel/r2d2",
+]
+
+[dependencies]
+diesel = { version = "2.3", features = [
+    "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
+] }
+diesel_migrations = "2.3"
+diesel-async = { git = "https://github.com/weiznich/diesel_async" }
+futures-util = "0.3.31"
+chrono = { version = "0.4", optional = true }
+turso = { git = "https://github.com/tursodatabase/turso" }
+
+[dev-dependencies]
+tokio = { version = "1.12.0", features = ["rt", "macros", "rt-multi-thread"] }

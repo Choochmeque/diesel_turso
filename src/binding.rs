@@ -1,0 +1,116 @@
+use std::sync::Arc;
+use turso::{Builder, Connection, Database, Value};
+
+#[derive(Debug, Clone)]
+pub struct TursoDatabase {
+    pub db: Database,
+}
+
+#[derive(Debug, Clone)]
+pub struct TursoConnection {
+    pub conn: Arc<Connection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TursoPreparedStatement {
+    pub sql: String,
+    pub binds: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TursoResult {
+    pub results: Vec<Vec<(String, Value)>>,
+    pub error: Option<String>,
+    pub changes: usize,
+}
+
+impl TursoDatabase {
+    pub async fn new(path: &str) -> Result<Self, turso::Error> {
+        let db = Builder::new_local(path).build().await?;
+        Ok(TursoDatabase { db })
+    }
+
+    pub async fn connect(&self) -> Result<TursoConnection, turso::Error> {
+        let conn = Arc::new(self.db.connect()?);
+        Ok(TursoConnection { conn })
+    }
+}
+
+impl TursoConnection {
+    pub fn prepare(&self, query: &str) -> TursoPreparedStatement {
+        TursoPreparedStatement {
+            sql: query.to_string(),
+            binds: Vec::new(),
+        }
+    }
+
+    pub async fn execute(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
+        // Execute the statement
+        let params: Vec<Value> = stmt.binds.clone();
+        let rows_affected = self.conn.execute(&stmt.sql, params).await?;
+
+        Ok(TursoResult {
+            results: Vec::new(),
+            error: None,
+            changes: rows_affected as usize,
+        })
+    }
+
+    pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
+        // Prepare and execute query
+        let mut prepared = self.conn.prepare(&stmt.sql).await?;
+        let params: Vec<Value> = stmt.binds.clone();
+        let mut rows = prepared.query(params).await?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let mut row_data = Vec::new();
+            let column_count = row.column_count();
+            for idx in 0..column_count {
+                // Since turso Row doesn't expose column names, use generic names
+                let col_name = format!("col_{}", idx);
+                let value = row.get_value(idx)?;
+                row_data.push((col_name, value));
+            }
+            results.push(row_data);
+        }
+
+        Ok(TursoResult {
+            results,
+            error: None,
+            changes: 0,
+        })
+    }
+}
+
+impl TursoPreparedStatement {
+    pub fn bind(&mut self, values: Vec<Value>) -> &mut Self {
+        self.binds = values;
+        self
+    }
+}
+
+impl TursoResult {
+    pub fn results(&self) -> Option<Vec<Vec<(String, Value)>>> {
+        if self.results.is_empty() {
+            None
+        } else {
+            Some(self.results.clone())
+        }
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.clone()
+    }
+
+    pub fn meta(&self) -> TursoMeta {
+        TursoMeta {
+            changes: self.changes,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TursoMeta {
+    pub changes: usize,
+}
