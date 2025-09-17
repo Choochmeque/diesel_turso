@@ -111,7 +111,7 @@ Areas for contribution include:
 - Performance optimizations  
 - Expanding test coverage  
 
-Open issues or submit PRs on [GitHub](https://github.com/Choochmeque/diesel_turso).
+Open issues or submit PRs on [GitHub](https://github.com/Choochmeque/diesel_turso/issues).
 
 ## License
 
@@ -128,8 +128,7 @@ Licensed under **MIT**. See [LICENSE](LICENSE) for details.
 - [ ] Feature parity with Diesel’s SQLite backend  
 - [ ] Comprehensive test suite  
 - [ ] Performance benchmarks  
-- [ ] Production-ready stability  
+- [ ] Production-ready stability (depends on Turso Database)  
 - [ ] Full documentation & examples  
-- [ ] Turso-specific features (replicas, etc.)  
 
 ---
