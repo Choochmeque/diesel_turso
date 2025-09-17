@@ -16,8 +16,8 @@ It provides async support through [`diesel-async`](https://github.com/weiznich/d
 - ✅ Async/await support via `diesel-async`  
 - ✅ Connection pooling (bb8, deadpool, mobc, r2d2)  
 - ✅ Optional `chrono` support for date/time types  
-- ✅ Type-safe query building with Diesel  
-- 🌍 Edge-ready for Turso’s distributed SQLite  
+- ✅ Type-safe query building with Diesel
+- ✅ Async SQLite database backend
 
 ## Installation
 
