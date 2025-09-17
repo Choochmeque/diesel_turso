@@ -1,6 +1,6 @@
 # diesel-turso
 
-A [Diesel](https://diesel.rs/) backend and connection implementation for [Turso Database](https://github.com/tursodatabase/turso), an in-process SQL database written in Rust, compatible with SQLite..
+A [Diesel](https://diesel.rs/) backend and connection implementation for [Turso Database](https://github.com/tursodatabase/turso), an in-process SQL database written in Rust, compatible with SQLite.
 
 > ⚠️ **Early Development**  
 > This project is experimental and **not suitable for production use**.  
