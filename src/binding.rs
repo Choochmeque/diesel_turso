@@ -70,14 +70,18 @@ impl TursoConnection {
         let mut prepared = self.conn.prepare(&stmt.sql).await?;
         let params: Vec<Value> = stmt.binds.clone();
         let mut rows = prepared.query(params).await?;
+        let columns = prepared.columns();
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let mut row_data = Vec::new();
             let column_count = row.column_count();
             for idx in 0..column_count {
-                // TODO: Since turso Row doesn't expose column names, use generic names
-                let col_name = format!("col_{}", idx);
+                // TODO: Since turso Row doesn't expose column names in row, let's try to get them
+                let col_name = match columns.get(idx) {
+                    Some(col) => col.name().to_string(),
+                    None => format!("col_{}", idx),
+                };
                 let value = row.get_value(idx)?;
                 row_data.push((col_name, value));
             }
