@@ -2,10 +2,14 @@ use backend::TursoBackend;
 use bind_collector::TursoBindCollector;
 use binding::{TursoConnection, TursoDatabase};
 use diesel::{
-    connection::{get_default_instrumentation, CacheSize, Instrumentation, InstrumentationEvent, StrQueryHelper},
+    connection::{
+        get_default_instrumentation, CacheSize, Instrumentation, InstrumentationEvent,
+        StrQueryHelper,
+    },
     query_builder::{AsQuery, QueryFragment, QueryId},
     ConnectionResult, QueryResult,
 };
+use diesel_async::AnsiTransactionManager;
 use diesel_async::{AsyncConnection, AsyncConnectionCore, SimpleAsyncConnection};
 use futures_util::{
     future::BoxFuture,
@@ -14,7 +18,6 @@ use futures_util::{
 };
 use query_builder::TursoQueryBuilder;
 use row::TursoRow;
-use diesel_async::AnsiTransactionManager;
 use utils::TursoError;
 
 pub mod backend;
@@ -25,7 +28,6 @@ mod row;
 mod types;
 mod utils;
 mod value;
-mod migration;
 
 pub struct AsyncTursoConnection {
     transaction_manager: AnsiTransactionManager,
@@ -63,7 +65,7 @@ impl AsyncTursoConnection {
 impl SimpleAsyncConnection for AsyncTursoConnection {
     async fn batch_execute(&mut self, query: &str) -> diesel::QueryResult<()> {
         self.ensure_connection().await?;
-        
+
         self.instrumentation()
             .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
                 query,
@@ -72,15 +74,21 @@ impl SimpleAsyncConnection for AsyncTursoConnection {
         let conn = self.connection.as_ref().unwrap();
         let stmt = conn.prepare(query);
 
-        match conn.execute(&stmt).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(diesel::result::Error::DatabaseError(
+        let result = conn.execute_batch(&stmt).await.map_err(|e| {
+            diesel::result::Error::DatabaseError(
                 diesel::result::DatabaseErrorKind::UnableToSendCommand,
                 Box::new(TursoError {
                     message: e.to_string(),
                 }),
-            )),
-        }
+            )
+        });
+
+        self.instrumentation()
+            .on_connection_event(InstrumentationEvent::finish_query(
+                &StrQueryHelper::new(query),
+                result.as_ref().err(),
+            ));
+        result
     }
 }
 

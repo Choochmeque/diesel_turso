@@ -6,7 +6,9 @@ use diesel::{
     sql_types::TypeMetadata,
 };
 
-use crate::{bind_collector::TursoBindCollector, query_builder::TursoQueryBuilder, value::TursoValue};
+use crate::{
+    bind_collector::TursoBindCollector, query_builder::TursoQueryBuilder, value::TursoValue,
+};
 
 /// The SQLite backend
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, Default)]

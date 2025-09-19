@@ -1,4 +1,4 @@
-use crate::backend::{TursoBackend, SqliteReturningClause};
+use crate::backend::{SqliteReturningClause, TursoBackend};
 use diesel::query_builder::ReturningClause;
 use diesel::query_builder::{AstPass, QueryFragment};
 use diesel::result::QueryResult;

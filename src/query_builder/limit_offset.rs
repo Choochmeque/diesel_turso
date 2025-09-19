@@ -111,7 +111,8 @@ where
     }
 }
 
-impl<'a, L, O> IntoBoxedClause<'a, TursoBackend> for LimitOffsetClause<LimitClause<L>, OffsetClause<O>>
+impl<'a, L, O> IntoBoxedClause<'a, TursoBackend>
+    for LimitOffsetClause<LimitClause<L>, OffsetClause<O>>
 where
     L: QueryFragment<TursoBackend> + Send + 'a,
     O: QueryFragment<TursoBackend> + Send + 'a,
