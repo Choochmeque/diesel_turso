@@ -78,4 +78,11 @@ impl TursoValue {
             _ => panic!("Value is not a blob"),
         }
     }
+
+    pub(crate) fn parse_string<R>(&self, f: impl FnOnce(&str) -> R) -> R {
+        match &self.value {
+            Value::Text(s) => f(s),
+            _ => panic!("Value is not a string"),
+        }
+    }
 }

@@ -130,7 +130,7 @@ async fn setup(connection: &mut TestConnection) {
     .unwrap();
 }
 
-async fn connection() -> TestConnection {
+pub async fn connection() -> TestConnection {
     let mut conn = connection_without_transaction().await;
     setup(&mut conn).await;
     conn.begin_test_transaction().await.unwrap();

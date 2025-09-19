@@ -1,5 +1,5 @@
 use diesel::{
-    deserialize::{self, FromSql},
+    deserialize::{self, FromSql, Queryable},
     serialize::{self, IsNull, Output, ToSql},
     sql_types::{self, HasSqlType},
 };
@@ -8,6 +8,30 @@ use crate::{
     backend::{TursoBackend, TursoType},
     value::TursoValue,
 };
+
+mod date_and_time;
+
+// VarChar
+impl HasSqlType<sql_types::VarChar> for TursoBackend {
+    fn metadata(_lookup: &mut ()) -> TursoType {
+        TursoType::Text
+    }
+}
+
+impl FromSql<sql_types::VarChar, TursoBackend> for *const str {
+    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
+        let text = value.read_string();
+        Ok(Box::leak(text.into_boxed_str()) as *const str)
+    }
+}
+
+impl Queryable<sql_types::VarChar, TursoBackend> for *const str {
+    type Row = Self;
+
+    fn build(row: Self::Row) -> deserialize::Result<Self> {
+        Ok(row)
+    }
+}
 
 // Boolean
 impl HasSqlType<sql_types::Bool> for TursoBackend {
@@ -146,17 +170,17 @@ impl ToSql<sql_types::Double, TursoBackend> for f64 {
 
 // Text
 
-impl HasSqlType<sql_types::Text> for TursoBackend {
-    fn metadata(_lookup: &mut ()) -> TursoType {
-        TursoType::Text
-    }
-}
+// impl HasSqlType<sql_types::Text> for TursoBackend {
+//     fn metadata(_lookup: &mut ()) -> TursoType {
+//         TursoType::Text
+//     }
+// }
 
-impl FromSql<sql_types::Text, TursoBackend> for String {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_string())
-    }
-}
+// impl FromSql<sql_types::Text, TursoBackend> for String {
+//     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
+//         Ok(value.read_string())
+//     }
+// }
 
 // impl ToSql<sql_types::Text, TursoBackend> for String {
 //     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
@@ -168,7 +192,7 @@ impl FromSql<sql_types::Text, TursoBackend> for String {
 impl FromSql<sql_types::Binary, TursoBackend> for *const [u8] {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
         let bytes = value.read_blob();
-        Ok(bytes.as_slice() as *const _)
+        Ok(Box::leak(bytes.into_boxed_slice()) as *const [u8])
     }
 }
 
@@ -220,88 +244,5 @@ impl HasSqlType<sql_types::Time> for TursoBackend {
 impl HasSqlType<sql_types::Timestamp> for TursoBackend {
     fn metadata(_lookup: &mut ()) -> TursoType {
         TursoType::Text
-    }
-}
-
-impl FromSql<sql_types::Date, TursoBackend> for String {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        FromSql::<sql_types::Text, TursoBackend>::from_sql(value)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl FromSql<sql_types::Date, TursoBackend> for chrono::NaiveDate {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        let text = value.read_string();
-        let parsed = chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d")?;
-        Ok(parsed)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl FromSql<sql_types::Timestamp, TursoBackend> for chrono::NaiveDateTime {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        let text = value.read_string();
-        let parsed = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S")
-            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S%.f"))?;
-        Ok(parsed)
-    }
-}
-
-impl ToSql<sql_types::Date, TursoBackend> for String {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        ToSql::<sql_types::Text, TursoBackend>::to_sql(self, out)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl ToSql<sql_types::Date, TursoBackend> for chrono::NaiveDate {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(self.format("%Y-%m-%d").to_string());
-        Ok(IsNull::No)
-    }
-}
-
-impl FromSql<sql_types::Time, TursoBackend> for String {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        FromSql::<sql_types::Text, TursoBackend>::from_sql(value)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl FromSql<sql_types::Time, TursoBackend> for chrono::NaiveTime {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        let text = value.read_string();
-        let parsed = chrono::NaiveTime::parse_from_str(&text, "%H:%M:%S")
-            .or_else(|_| chrono::NaiveTime::parse_from_str(&text, "%H:%M:%S%.f"))?;
-        Ok(parsed)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl ToSql<sql_types::Time, TursoBackend> for chrono::NaiveTime {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(self.format("%H:%M:%S").to_string());
-        Ok(IsNull::No)
-    }
-}
-
-impl FromSql<sql_types::Timestamp, TursoBackend> for String {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        FromSql::<sql_types::Text, TursoBackend>::from_sql(value)
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl ToSql<sql_types::Timestamp, TursoBackend> for chrono::NaiveDateTime {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(self.format("%Y-%m-%d %H:%M:%S").to_string());
-        Ok(IsNull::No)
-    }
-}
-
-impl ToSql<sql_types::Timestamp, TursoBackend> for String {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        ToSql::<sql_types::Text, TursoBackend>::to_sql(self, out)
     }
 }
