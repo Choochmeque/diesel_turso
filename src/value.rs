@@ -1,5 +1,6 @@
 use turso::Value;
 
+#[derive(Debug)]
 pub struct TursoValue {
     value: Value,
 }
@@ -28,9 +29,33 @@ impl From<String> for TursoValue {
     }
 }
 
+impl From<i16> for TursoValue {
+    fn from(value: i16) -> Self {
+        Self::from_turso_value(Value::Integer(value as i64))
+    }
+}
+
+impl From<i32> for TursoValue {
+    fn from(value: i32) -> Self {
+        Self::from_turso_value(Value::Integer(value as i64))
+    }
+}
+
+impl From<f32> for TursoValue {
+    fn from(value: f32) -> Self {
+        Self::from_turso_value(Value::Real(value as f64))
+    }
+}
+
 impl From<Vec<u8>> for TursoValue {
     fn from(value: Vec<u8>) -> Self {
         Self::from_turso_value(Value::Blob(value))
+    }
+}
+
+impl From<()> for TursoValue {
+    fn from(_value: ()) -> Self {
+        Self::from_turso_value(Value::Null)
     }
 }
 
@@ -84,5 +109,9 @@ impl TursoValue {
             Value::Text(s) => f(s),
             _ => panic!("Value is not a string, but {:?}", self.value),
         }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self.value, Value::Null)
     }
 }

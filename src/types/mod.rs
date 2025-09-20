@@ -11,27 +11,15 @@ use crate::{
 
 mod date_and_time;
 
-// VarChar
-impl HasSqlType<sql_types::VarChar> for TursoBackend {
-    fn metadata(_lookup: &mut ()) -> TursoType {
-        TursoType::Text
-    }
-}
+// VarChar is just an alias for Text in diesel, so we only need Text implementations
 
-impl FromSql<sql_types::VarChar, TursoBackend> for *const str {
+impl FromSql<sql_types::Text, TursoBackend> for *const str {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
         let text = value.read_string();
         Ok(Box::leak(text.into_boxed_str()) as *const str)
     }
 }
 
-impl Queryable<sql_types::VarChar, TursoBackend> for *const str {
-    type Row = Self;
-
-    fn build(row: Self::Row) -> deserialize::Result<Self> {
-        Ok(row)
-    }
-}
 
 // Boolean
 impl HasSqlType<sql_types::Bool> for TursoBackend {
@@ -48,8 +36,8 @@ impl FromSql<sql_types::Bool, TursoBackend> for bool {
 
 impl ToSql<sql_types::Bool, TursoBackend> for bool {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self);
-        Ok(IsNull::No)
+        let int_value = if *self { &1 } else { &0 };
+        <i32 as ToSql<sql_types::Integer, TursoBackend>>::to_sql(int_value, out)
     }
 }
 
@@ -69,7 +57,7 @@ impl FromSql<sql_types::SmallInt, TursoBackend> for i16 {
 
 impl ToSql<sql_types::SmallInt, TursoBackend> for i16 {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self as f64);
+        out.set_value(*self as i32);
         Ok(IsNull::No)
     }
 }
@@ -115,7 +103,7 @@ impl FromSql<sql_types::BigInt, TursoBackend> for i64 {
 
 impl ToSql<sql_types::BigInt, TursoBackend> for i64 {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self as f64);
+        out.set_value(*self);
         Ok(IsNull::No)
     }
 }
@@ -169,25 +157,18 @@ impl ToSql<sql_types::Double, TursoBackend> for f64 {
 // ------
 
 // Text
+impl HasSqlType<sql_types::Text> for TursoBackend {
+    fn metadata(_lookup: &mut ()) -> TursoType {
+        TursoType::Text
+    }
+}
 
-// impl HasSqlType<sql_types::Text> for TursoBackend {
-//     fn metadata(_lookup: &mut ()) -> TursoType {
-//         TursoType::Text
-//     }
-// }
-
-// impl FromSql<sql_types::Text, TursoBackend> for String {
-//     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-//         Ok(value.read_string())
-//     }
-// }
-
-// impl ToSql<sql_types::Text, TursoBackend> for String {
-//     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-//         out.set_value(self.clone());
-//         Ok(IsNull::No)
-//     }
-// }
+impl ToSql<sql_types::Text, TursoBackend> for str {
+    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
+        out.set_value(self.to_string());
+        Ok(IsNull::No)
+    }
+}
 
 impl FromSql<sql_types::Binary, TursoBackend> for *const [u8] {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
@@ -198,7 +179,7 @@ impl FromSql<sql_types::Binary, TursoBackend> for *const [u8] {
 
 impl ToSql<sql_types::Binary, TursoBackend> for [u8] {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(self);
+        out.set_value(self.to_vec());
         Ok(IsNull::No)
     }
 }
@@ -209,13 +190,6 @@ impl ToSql<sql_types::Binary, TursoBackend> for [u8] {
 //         Ok(text.as_ref())
 //     }
 // }
-
-impl ToSql<sql_types::Text, TursoBackend> for str {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(self.to_string());
-        Ok(IsNull::No)
-    }
-}
 
 // ------
 

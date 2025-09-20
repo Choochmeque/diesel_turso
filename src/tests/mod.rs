@@ -14,6 +14,7 @@ use std::fmt::Debug;
 ))]
 mod pooling;
 mod type_check;
+mod turso_unit_tests;
 
 async fn transaction_test<C: AsyncConnection<Backend = TestBackend>>(
     conn: &mut C,
