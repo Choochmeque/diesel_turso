@@ -12,12 +12,16 @@ async fn test_simple_turso_operations() {
 
     // Insert with text value
     let sql = "INSERT INTO test (value) VALUES (?)";
-    conn.execute(sql, (Value::Text("test".to_string()),)).await.unwrap();
+    conn.execute(sql, (Value::Text("test".to_string()),))
+        .await
+        .unwrap();
 
     // Try update with text value - should work
     let sql = "UPDATE test SET value = ? WHERE id = ?";
-    let result = conn.execute(sql, (Value::Text("updated".to_string()), Value::Integer(1))).await;
-    
+    let result = conn
+        .execute(sql, (Value::Text("updated".to_string()), Value::Integer(1)))
+        .await;
+
     match result {
         Ok(changes) => {
             println!("Text update succeeded! Changes: {}", changes);
@@ -31,10 +35,18 @@ async fn test_simple_turso_operations() {
         }
     }
 
-    // Try update with integer as text in a WHERE clause that expects integer 
+    // Try update with integer as text in a WHERE clause that expects integer
     let sql = "UPDATE test SET value = ? WHERE id = ?";
-    let result = conn.execute(sql, (Value::Text("updated2".to_string()), Value::Text("1".to_string()))).await;
-    
+    let result = conn
+        .execute(
+            sql,
+            (
+                Value::Text("updated2".to_string()),
+                Value::Text("1".to_string()),
+            ),
+        )
+        .await;
+
     match result {
         Ok(changes) => {
             println!("Text-as-ID update succeeded! Changes: {}", changes);
@@ -64,7 +76,7 @@ async fn test_pure_turso_update_operations() {
             name TEXT NOT NULL
         )
     ";
-    
+
     let create_posts_sql = "
         CREATE TABLE posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,18 +94,32 @@ async fn test_pure_turso_update_operations() {
 
     // Insert test users (this is what works in our diesel test)
     for name in &["UpdateMe", "KeepMe"] {
-        conn.execute("INSERT INTO users (name) VALUES (?)", (Value::Text(name.to_string()),)).await.unwrap();
+        conn.execute(
+            "INSERT INTO users (name) VALUES (?)",
+            (Value::Text(name.to_string()),),
+        )
+        .await
+        .unwrap();
     }
 
     // Try the update operation that fails in diesel
     println!("Executing: UPDATE users SET name = ? WHERE name = ?");
-    println!("Binds: [{:?}, {:?}]", Value::Text("Updated".to_string()), Value::Text("UpdateMe".to_string()));
-    
-    let result = conn.execute("UPDATE users SET name = ? WHERE name = ?", (
+    println!(
+        "Binds: [{:?}, {:?}]",
         Value::Text("Updated".to_string()),
-        Value::Text("UpdateMe".to_string()),
-    )).await;
-    
+        Value::Text("UpdateMe".to_string())
+    );
+
+    let result = conn
+        .execute(
+            "UPDATE users SET name = ? WHERE name = ?",
+            (
+                Value::Text("Updated".to_string()),
+                Value::Text("UpdateMe".to_string()),
+            ),
+        )
+        .await;
+
     match result {
         Ok(changes) => {
             println!("Update succeeded! Changes: {}", changes);
@@ -110,7 +136,13 @@ async fn test_pure_turso_update_operations() {
     }
 
     // Get the updated user ID for posts
-    let mut rows = conn.query("SELECT id FROM users WHERE name = ?", (Value::Text("Updated".to_string()),)).await.unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT id FROM users WHERE name = ?",
+            (Value::Text("Updated".to_string()),),
+        )
+        .await
+        .unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let user_id = row.get::<i64>(0).unwrap();
 
@@ -127,14 +159,21 @@ async fn test_pure_turso_update_operations() {
     }
 
     // The critical boolean update that fails in diesel
-    println!("Executing the critical boolean update: UPDATE posts SET published = ? WHERE published = ?");
+    println!(
+        "Executing the critical boolean update: UPDATE posts SET published = ? WHERE published = ?"
+    );
     println!("Binds: [{:?}, {:?}]", Value::Integer(1), Value::Integer(0));
-    
-    let result = conn.execute("UPDATE posts SET published = ? WHERE published = ?", (
-        Value::Integer(1), // true 
-        Value::Integer(0), // false
-    )).await;
-    
+
+    let result = conn
+        .execute(
+            "UPDATE posts SET published = ? WHERE published = ?",
+            (
+                Value::Integer(1), // true
+                Value::Integer(0), // false
+            ),
+        )
+        .await;
+
     match result {
         Ok(changes) => {
             println!("Boolean update succeeded! Changes: {}", changes);
@@ -151,11 +190,17 @@ async fn test_pure_turso_update_operations() {
     }
 
     // Verify the updates worked
-    let mut rows = conn.query("SELECT COUNT(*) FROM posts WHERE published = ?", (Value::Integer(1),)).await.unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM posts WHERE published = ?",
+            (Value::Integer(1),),
+        )
+        .await
+        .unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let count = row.get::<i64>(0).unwrap();
     assert_eq!(count, 2);
-    
+
     println!("Pure Turso test passed - ALL operations including boolean updates work fine!");
 }
 
@@ -165,7 +210,7 @@ async fn test_pure_turso_boolean_operations() {
     let db = Builder::new_local(":memory:").build().await.unwrap();
     let conn = db.connect().unwrap();
 
-    // Create posts table 
+    // Create posts table
     let create_posts_sql = "
         CREATE TABLE posts (
             id INTEGER PRIMARY KEY,
@@ -178,21 +223,31 @@ async fn test_pure_turso_boolean_operations() {
 
     // Insert test posts
     for (title, published) in &[("Draft 1", false), ("Draft 2", false)] {
-        conn.execute("INSERT INTO posts (title, published) VALUES (?, ?)", (
-            Value::Text(title.to_string()),
-            Value::Integer(if *published { 1 } else { 0 }),
-        )).await.unwrap();
+        conn.execute(
+            "INSERT INTO posts (title, published) VALUES (?, ?)",
+            (
+                Value::Text(title.to_string()),
+                Value::Integer(if *published { 1 } else { 0 }),
+            ),
+        )
+        .await
+        .unwrap();
     }
 
     // Try the boolean update operation that might cause MustBeInt
     println!("Executing: UPDATE posts SET published = ? WHERE published = ?");
     println!("Binds: [{:?}, {:?}]", Value::Integer(1), Value::Integer(0));
-    
-    let result = conn.execute("UPDATE posts SET published = ? WHERE published = ?", (
-        Value::Integer(1), // true
-        Value::Integer(0), // false
-    )).await;
-    
+
+    let result = conn
+        .execute(
+            "UPDATE posts SET published = ? WHERE published = ?",
+            (
+                Value::Integer(1), // true
+                Value::Integer(0), // false
+            ),
+        )
+        .await;
+
     match result {
         Ok(changes) => {
             println!("Boolean update succeeded! Changes: {}", changes);
@@ -210,7 +265,7 @@ async fn test_pure_turso_boolean_operations() {
 }
 
 /// Test with various value types to see which one triggers MustBeInt
-#[tokio::test] 
+#[tokio::test]
 async fn test_pure_turso_value_types() {
     let db = Builder::new_local(":memory:").build().await.unwrap();
     let conn = db.connect().unwrap();
@@ -240,39 +295,50 @@ async fn test_pure_turso_value_types() {
 
     for (test_name, value) in test_values {
         println!("\nTesting value type: {} -> {:?}", test_name, value);
-        
+
         // Insert the value
         let result = conn.execute("INSERT INTO test_table (text_col, int_col, real_col, bool_col) VALUES (?, ?, ?, ?)", (
             value.clone(),
-            value.clone(), 
+            value.clone(),
             value.clone(),
             value.clone(),
         )).await;
-        
+
         match result {
             Ok(_) => println!("  Insert succeeded"),
             Err(e) => {
                 println!("  Insert failed: {}", e);
                 if e.to_string().contains("MustBeInt") {
-                    println!("  *** FOUND MustBeInt ERROR on INSERT with value type: {} ***", test_name);
+                    println!(
+                        "  *** FOUND MustBeInt ERROR on INSERT with value type: {} ***",
+                        test_name
+                    );
                 }
             }
         }
 
         // Try to update with the same value type
-        let result = conn.execute("UPDATE test_table SET text_col = ? WHERE id = (SELECT MAX(id) FROM test_table)", (value.clone(),)).await;
-        
+        let result = conn
+            .execute(
+                "UPDATE test_table SET text_col = ? WHERE id = (SELECT MAX(id) FROM test_table)",
+                (value.clone(),),
+            )
+            .await;
+
         match result {
             Ok(_) => println!("  Update succeeded"),
             Err(e) => {
                 println!("  Update failed: {}", e);
                 if e.to_string().contains("MustBeInt") {
-                    println!("  *** FOUND MustBeInt ERROR on UPDATE with value type: {} ***", test_name);
+                    println!(
+                        "  *** FOUND MustBeInt ERROR on UPDATE with value type: {} ***",
+                        test_name
+                    );
                 }
             }
         }
     }
-    
+
     println!("Value type testing completed!");
 }
 
@@ -283,15 +349,22 @@ async fn test_limit_clause_issue() -> Result<(), turso::Error> {
     let conn = db.connect().unwrap();
 
     // Setup
-    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ()).await.unwrap();
-    conn.execute("INSERT INTO users (name) VALUES (?)", (Value::Text("Updated".to_string()),)).await.unwrap();
-    
+    conn.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        (),
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?)",
+        (Value::Text("Updated".to_string()),),
+    )
+    .await
+    .unwrap();
+
     let sql = "SELECT `users`.`id`, `users`.`name` FROM `users` WHERE (`users`.`name` = ?) LIMIT ?";
-    let params = vec![
-        Value::Text("Updated".to_string()),
-        Value::Integer(1),
-    ];
-    
+    let params = vec![Value::Text("Updated".to_string()), Value::Integer(1)];
+
     // Pattern 1: The working pattern from earlier tests (no row iteration)
     println!("Testing working pattern (no row iteration)...");
     {
@@ -302,13 +375,13 @@ async fn test_limit_clause_issue() -> Result<(), turso::Error> {
             Err(e) => println!("  Working pattern - FAILED: {}", e),
         }
     }
-    
+
     // Pattern 2: The failing pattern (with row iteration)
     println!("Testing failing pattern (with row iteration)...");
     {
         let mut prepared = conn.prepare(sql).await.unwrap();
         let mut rows = prepared.query(params.clone()).await.unwrap();
-        
+
         println!("  Query executed, now trying rows.next()...");
         let result = rows.next().await;
         match result {
@@ -322,7 +395,7 @@ async fn test_limit_clause_issue() -> Result<(), turso::Error> {
             }
         }
     }
-    
+
     println!("Pattern comparison completed!");
     Ok(())
 }

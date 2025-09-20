@@ -13,8 +13,8 @@ use std::fmt::Debug;
     feature = "r2d2"
 ))]
 mod pooling;
-mod type_check;
 mod turso_unit_tests;
+mod type_check;
 
 async fn transaction_test<C: AsyncConnection<Backend = TestBackend>>(
     conn: &mut C,

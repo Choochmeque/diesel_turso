@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::RunQueryDsl;
 //#[cfg(not(feature = "sqlite"))]
-use diesel_async::SaveChangesDsl;
+//use diesel_async::SaveChangesDsl;
 
 #[tokio::test]
 #[cfg(feature = "bb8")]
@@ -63,13 +63,13 @@ async fn save_changes_deadpool() {
     let u = users::table.first::<User>(&mut conn).await.unwrap();
     assert_eq!(u.name, "John");
 
-    //#[cfg(not(feature = "sqlite"))]
+    // #[cfg(not(feature = "sqlite"))]
     // {
-        // let mut u = u;
-        // u.name = "Jane".into();
-        // let u2: User = u.save_changes(&mut conn).await.unwrap();
+    //     let mut u = u;
+    //     u.name = "Jane".into();
+    //     let u2: User = u.save_changes(&mut conn).await.unwrap();
 
-        // assert_eq!(u2.name, "Jane");
+    //     assert_eq!(u2.name, "Jane");
     // }
 }
 
@@ -99,11 +99,11 @@ async fn save_changes_mobc() {
 
     // #[cfg(not(feature = "sqlite"))]
     // {
-        let mut u = u;
-        u.name = "Jane".into();
-        let u2: User = u.save_changes(&mut conn).await.unwrap();
+    //     let mut u = u;
+    //     u.name = "Jane".into();
+    //     let u2: User = u.save_changes(&mut conn).await.unwrap();
 
-        assert_eq!(u2.name, "Jane");
+    //     assert_eq!(u2.name, "Jane");
     // }
 }
 
@@ -115,7 +115,7 @@ async fn save_changes_r2d2() {
 
     let db_url = std::env::var("DATABASE_URL").unwrap();
 
-    type AsyncWrapper = AsyncConnectionWrapper::<super::TestConnection>;
+    type AsyncWrapper = AsyncConnectionWrapper<super::TestConnection>;
 
     let config: ConnectionManager<AsyncWrapper> = ConnectionManager::new(&db_url);
     let pool = Pool::builder().build(config).unwrap();
@@ -134,11 +134,11 @@ async fn save_changes_r2d2() {
     assert_eq!(u.name, "John");
 
     // #[cfg(not(feature = "sqlite"))]
-    // // {
-        // let mut u = u;
-        // u.name = "Jane".into();
-        // let u2: User = u.save_changes(&mut conn).await.unwrap();
+    // {
+    //     let mut u = u;
+    //     u.name = "Jane".into();
+    //     let u2: User = u.save_changes(&mut conn).await.unwrap();
 
-        // assert_eq!(u2.name, "Jane");
-    // // }
+    //     assert_eq!(u2.name, "Jane");
+    // }
 }

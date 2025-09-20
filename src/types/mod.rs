@@ -1,5 +1,5 @@
 use diesel::{
-    deserialize::{self, FromSql, Queryable},
+    deserialize::{self, FromSql},
     serialize::{self, IsNull, Output, ToSql},
     sql_types::{self, HasSqlType},
 };
@@ -19,7 +19,6 @@ impl FromSql<sql_types::Text, TursoBackend> for *const str {
         Ok(Box::leak(text.into_boxed_str()) as *const str)
     }
 }
-
 
 // Boolean
 impl HasSqlType<sql_types::Bool> for TursoBackend {
