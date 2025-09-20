@@ -52,14 +52,14 @@ impl TursoValue {
     pub(crate) fn read_string(&self) -> String {
         match &self.value {
             Value::Text(s) => s.clone(),
-            _ => panic!("Value is not a string"),
+            _ => panic!("Value is not a string, but {:?}", self.value),
         }
     }
 
     pub(crate) fn read_bool(&self) -> bool {
         match &self.value {
             Value::Integer(i) => *i != 0,
-            _ => panic!("Value is not a bool"),
+            _ => panic!("Value is not a bool, but {:?}", self.value),
         }
     }
 
@@ -68,21 +68,21 @@ impl TursoValue {
         match &self.value {
             Value::Real(f) => *f,
             Value::Integer(i) => *i as f64,
-            _ => panic!("Value is not a number"),
+            _ => panic!("Value is not a number, but {:?}", self.value),
         }
     }
 
     pub(crate) fn read_blob(&self) -> Vec<u8> {
         match &self.value {
             Value::Blob(b) => b.clone(),
-            _ => panic!("Value is not a blob"),
+            _ => panic!("Value is not a blob, but {:?}", self.value),
         }
     }
 
     pub(crate) fn parse_string<R>(&self, f: impl FnOnce(&str) -> R) -> R {
         match &self.value {
             Value::Text(s) => f(s),
-            _ => panic!("Value is not a string"),
+            _ => panic!("Value is not a string, but {:?}", self.value),
         }
     }
 }

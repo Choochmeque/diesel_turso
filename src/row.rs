@@ -92,6 +92,9 @@ impl<'stmt> Field<'stmt, TursoBackend> for TursoField<'stmt> {
 
     fn value(&self) -> Option<TursoValue> {
         let turso_value = self.values.get(self.index)?;
-        Some(TursoValue::from_turso_value(turso_value.clone()))
+        match turso_value {
+            Value::Null => None,
+            _ => Some(TursoValue::from_turso_value(turso_value.clone())),
+        }
     }
 }

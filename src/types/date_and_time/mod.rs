@@ -1,13 +1,10 @@
 use diesel::{
     deserialize::{self, FromSql},
-    serialize::{self, IsNull, Output, ToSql},
-    sql_types::{self, HasSqlType},
+    serialize::{self, Output, ToSql},
+    sql_types::{self},
 };
 
-use crate::{
-    backend::{TursoBackend, TursoType},
-    value::TursoValue,
-};
+use crate::{backend::TursoBackend, value::TursoValue};
 
 #[cfg(feature = "chrono")]
 mod chrono;

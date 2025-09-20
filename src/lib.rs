@@ -23,6 +23,8 @@ use utils::TursoError;
 pub mod backend;
 mod bind_collector;
 mod binding;
+mod insert_with_default_for_turso;
+mod insertable;
 mod query_builder;
 mod row;
 mod types;
@@ -133,7 +135,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 ));
             }
 
-            let results = result.results().unwrap_or_else(|| Vec::new());
+            let results = result.results().unwrap_or_else(Vec::new);
 
             if results.is_empty() {
                 return Ok(stream::iter(vec![]).boxed());
