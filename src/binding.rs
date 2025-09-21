@@ -50,7 +50,28 @@ impl TursoConnection {
     ) -> Result<TursoResult, turso::Error> {
         // Execute the statement
         let params: Vec<Value> = stmt.binds.clone();
-        let rows_affected = self.conn.execute(&stmt.sql, params).await?;
+        let result = self.conn.execute(&stmt.sql, params).await;
+
+        // TODO: this is a workaround for handling unexpected rows during execution, means it should be a query not an execute
+        let rows_affected = match result {
+            Ok(res) => res,
+            Err(e) => {
+                match e {
+                    turso::Error::SqlExecutionFailure(msg) => {
+                        match msg.as_str() {
+                            "unexpected row during execution" => {
+                                return self.query(stmt).await;
+                            }
+                            _ => {
+                                return Err(turso::Error::SqlExecutionFailure(msg));
+                            }
+                        }
+                    }
+                    _ => return Err(e),
+                    
+                }
+            }
+        };
 
         Ok(TursoResult {
             results: Vec::new(),
