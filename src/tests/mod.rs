@@ -363,7 +363,7 @@ async fn test_crud_operations() -> QueryResult<()> {
 
     assert_eq!(post.title, "My First Post");
     assert_eq!(post.body, "This is the content");
-    assert_eq!(post.published, true);
+    assert!(post.published);
     assert_eq!(post.user_id, alice.id);
 
     Ok(())
@@ -461,7 +461,7 @@ async fn test_update_operations() -> QueryResult<()> {
                 body,
                 published: false,
                 user_id: updated_user.id,
-                created_at: now.clone(),
+                created_at: now,
             })
             .execute(conn)
             .await?;
@@ -517,7 +517,7 @@ async fn test_delete_operations() -> QueryResult<()> {
                 body: "Will be deleted",
                 published: true,
                 user_id: user.id,
-                created_at: now.clone(),
+                created_at: now,
             })
             .execute(conn)
             .await?;
@@ -602,7 +602,7 @@ async fn test_aggregate_functions() -> QueryResult<()> {
                     body: &format!("Content for post {}-{}", i, j),
                     published: true,
                     user_id: i,
-                    created_at: now.clone(),
+                    created_at: now,
                 })
                 .execute(conn)
                 .await?;
@@ -685,7 +685,7 @@ async fn test_join_operations() -> QueryResult<()> {
                     body: &format!("Content {}", j),
                     published: true,
                     user_id: user.id,
-                    created_at: now.clone(),
+                    created_at: now,
                 })
                 .execute(conn)
                 .await?;
@@ -852,7 +852,7 @@ async fn test_nullable_fields() -> QueryResult<()> {
             body: "Content",
             published: true,
             user_id: users_list[0].id,
-            created_at: now.clone(),
+            created_at: now,
         })
         .execute(conn)
         .await?;
@@ -934,7 +934,7 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
                     body: "Content",
                     published: true,
                     user_id: user.id,
-                    created_at: now.clone(),
+                    created_at: now,
                 })
                 .execute(conn)
                 .await?;

@@ -1,6 +1,5 @@
 use super::{users, User};
 use diesel::prelude::*;
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::RunQueryDsl;
 //#[cfg(not(feature = "sqlite"))]
 //use diesel_async::SaveChangesDsl;

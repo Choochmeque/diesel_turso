@@ -477,7 +477,7 @@ async fn test_join_operations() -> Result<(), turso::Error> {
         .await?;
     let mut rows = stmt.query(Vec::<Value>::new()).await?;
     let mut count = 0;
-    while let Some(_) = rows.next().await? {
+    while (rows.next().await?).is_some() {
         count += 1;
     }
     assert_eq!(count, 6);
