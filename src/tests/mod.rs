@@ -219,10 +219,10 @@ type TestBackend = TursoBackend;
 async fn test_basic_insert_and_load() -> QueryResult<()> {
     let conn = &mut connection().await;
 
-    // let res = diesel::sql_query("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
-    //     .execute(conn)
-    //     .await;
-    // assert!(res.is_ok(), "Failed to set journal mode");
+    let res = diesel::sql_query("PRAGMA journal_mode = WAL;")
+        .execute(conn)
+        .await;
+    assert!(res.is_ok(), "Failed to set journal mode");
 
     // Insertion split into 2 since Sqlite batch insert isn't supported for diesel_async yet
     let res = diesel::insert_into(users::table)
