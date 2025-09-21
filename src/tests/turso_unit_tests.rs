@@ -1,401 +1,693 @@
-use turso::{Builder, Value};
+use turso::{Builder, Connection, Value};
 
-/// Simplified pure Turso test with correct API
-#[tokio::test]
-async fn test_simple_turso_operations() {
-    let db = Builder::new_local(":memory:").build().await.unwrap();
-    let conn = db.connect().unwrap();
-
-    // Create table
-    let sql = "CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)";
-    conn.execute(sql, ()).await.unwrap();
-
-    // Insert with text value
-    let sql = "INSERT INTO test (value) VALUES (?)";
-    conn.execute(sql, (Value::Text("test".to_string()),))
+async fn setup(connection: &Connection) {
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+            Vec::<Value>::new(),
+        )
         .await
         .unwrap();
 
-    // Try update with text value - should work
-    let sql = "UPDATE test SET value = ? WHERE id = ?";
-    let result = conn
-        .execute(sql, (Value::Text("updated".to_string()), Value::Integer(1)))
-        .await;
-
-    match result {
-        Ok(changes) => {
-            println!("Text update succeeded! Changes: {}", changes);
-        }
-        Err(e) => {
-            println!("Text update failed: {}", e);
-            if e.to_string().contains("MustBeInt") {
-                println!("*** FOUND MustBeInt ERROR with text update ***");
-                panic!("MustBeInt error: {}", e);
-            }
-        }
-    }
-
-    // Try update with integer as text in a WHERE clause that expects integer
-    let sql = "UPDATE test SET value = ? WHERE id = ?";
-    let result = conn
+    connection
         .execute(
-            sql,
-            (
-                Value::Text("updated2".to_string()),
-                Value::Text("1".to_string()),
-            ),
-        )
-        .await;
-
-    match result {
-        Ok(changes) => {
-            println!("Text-as-ID update succeeded! Changes: {}", changes);
-        }
-        Err(e) => {
-            println!("Text-as-ID update failed: {}", e);
-            if e.to_string().contains("MustBeInt") {
-                println!("*** FOUND MustBeInt ERROR with text-as-ID ***");
-                panic!("Reproduced MustBeInt: {}", e);
-            }
-        }
-    }
-
-    println!("Simple Turso test completed!");
-}
-
-/// Pure Turso test to replicate the exact diesel test scenario
-#[tokio::test]
-async fn test_pure_turso_update_operations() {
-    let db = Builder::new_local(":memory:").build().await.unwrap();
-    let conn = db.connect().unwrap();
-
-    // Create tables similar to our diesel test
-    let create_users_sql = "
-        CREATE TABLE users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL
-        )
-    ";
-
-    let create_posts_sql = "
-        CREATE TABLE posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            "CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY,
             title TEXT NOT NULL,
             body TEXT NOT NULL,
             published BOOLEAN NOT NULL DEFAULT 0,
             user_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )",
+            Vec::<Value>::new(),
         )
-    ";
+        .await
+        .unwrap();
 
-    // Create tables
-    conn.execute(create_users_sql, ()).await.unwrap();
-    conn.execute(create_posts_sql, ()).await.unwrap();
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY,
+            post_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            rating INTEGER,
+            FOREIGN KEY (post_id) REFERENCES posts(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )",
+            Vec::<Value>::new(),
+        )
+        .await
+        .unwrap();
 
-    // Insert test users (this is what works in our diesel test)
-    for name in &["UpdateMe", "KeepMe"] {
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT
+        )",
+            Vec::<Value>::new(),
+        )
+        .await
+        .unwrap();
+
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS post_categories (
+            post_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            PRIMARY KEY (post_id, category_id),
+            FOREIGN KEY (post_id) REFERENCES posts(id),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        )",
+            Vec::<Value>::new(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn connection() -> Connection {
+    let conn = connection_without_transaction().await;
+    setup(&conn).await;
+    conn
+}
+
+async fn connection_without_transaction() -> Connection {
+    let db_url = std::env::var("DATABASE_URL").unwrap();
+    let db = Builder::new_local(&db_url).build().await.unwrap();
+    db.connect().unwrap()
+}
+
+#[tokio::test]
+async fn test_basic_insert_and_select() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    let insert1 = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?)",
+            vec![Value::Text("John Doe".to_string())],
+        )
+        .await?;
+    assert_eq!(insert1, 1);
+
+    let insert2 = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?)",
+            vec![Value::Text("Jane Doe".to_string())],
+        )
+        .await?;
+    assert_eq!(insert2, 1);
+
+    let mut stmt = conn.prepare("SELECT name FROM users ORDER BY id").await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    let mut names = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let name_value = row.get_value(0)?;
+        if let Value::Text(name) = name_value {
+            names.push(name);
+        }
+    }
+    assert_eq!(names, vec!["John Doe", "Jane Doe"]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_crud_operations() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    let insert_result = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?), (?), (?)",
+            vec![
+                Value::Text("Alice".to_string()),
+                Value::Text("Bob".to_string()),
+                Value::Text("Charlie".to_string()),
+            ],
+        )
+        .await?;
+    assert_eq!(insert_result, 3);
+
+    let post_insert = conn
+        .execute(
+            "INSERT INTO posts (title, body, published, user_id, created_at) 
+                       VALUES (?, ?, ?, ?, datetime('now'))",
+            vec![
+                Value::Text("My First Post".to_string()),
+                Value::Text("This is the content".to_string()),
+                Value::Integer(1),
+                Value::Integer(1),
+            ],
+        )
+        .await?;
+    assert_eq!(post_insert, 1);
+
+    let mut stmt = conn
+        .prepare("SELECT count(*) FROM posts WHERE title = ?")
+        .await?;
+    let mut rows = stmt
+        .query(vec![Value::Text("My First Post".to_string())])
+        .await?;
+    if let Some(row) = rows.next().await? {
+        let count_value = row.get_value(0)?;
+        if let Value::Integer(count) = count_value {
+            assert_eq!(count, 1);
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_filtering_and_where_clauses() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    for i in 1..=10 {
         conn.execute(
             "INSERT INTO users (name) VALUES (?)",
-            (Value::Text(name.to_string()),),
+            vec![Value::Text(format!("User{}", i))],
         )
-        .await
-        .unwrap();
+        .await?;
     }
 
-    // Try the update operation that fails in diesel
-    println!("Executing: UPDATE users SET name = ? WHERE name = ?");
-    println!(
-        "Binds: [{:?}, {:?}]",
-        Value::Text("Updated".to_string()),
-        Value::Text("UpdateMe".to_string())
-    );
+    for i in 1..=5 {
+        let published = if i % 2 == 0 { 1 } else { 0 };
+        conn.execute(
+            "INSERT INTO posts (title, body, published, user_id, created_at) 
+             VALUES (?, ?, ?, ?, datetime('now'))",
+            vec![
+                Value::Text(format!("Post {}", i)),
+                Value::Text(format!("Content {}", i)),
+                Value::Integer(published),
+                Value::Integer(i),
+            ],
+        )
+        .await?;
+    }
 
-    let result = conn
+    let mut stmt = conn
+        .prepare("SELECT count(*) FROM posts WHERE published = ?")
+        .await?;
+    let mut rows = stmt.query(vec![Value::Integer(1)]).await?;
+    if let Some(row) = rows.next().await? {
+        let count_value = row.get_value(0)?;
+        if let Value::Integer(count) = count_value {
+            assert_eq!(count, 2);
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_update_operations() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?), (?)",
+        vec![
+            Value::Text("UpdateMe".to_string()),
+            Value::Text("KeepMe".to_string()),
+        ],
+    )
+    .await?;
+
+    let updated = conn
         .execute(
             "UPDATE users SET name = ? WHERE name = ?",
-            (
+            vec![
                 Value::Text("Updated".to_string()),
                 Value::Text("UpdateMe".to_string()),
-            ),
+            ],
         )
-        .await;
+        .await?;
+    assert_eq!(updated, 1);
 
-    match result {
-        Ok(changes) => {
-            println!("Update succeeded! Changes: {}", changes);
-        }
-        Err(e) => {
-            println!("Update failed with error: {}", e);
-            if e.to_string().contains("MustBeInt") {
-                println!("*** REPRODUCED MustBeInt ERROR in exact diesel scenario! ***");
-                panic!("Reproduced MustBeInt: {}", e);
-            } else {
-                panic!("Pure Turso update failed: {}", e);
-            }
+    let mut stmt = conn
+        .prepare("SELECT name FROM users WHERE name = ?")
+        .await?;
+    let mut rows = stmt.query(vec![Value::Text("Updated".to_string())]).await?;
+    if let Some(row) = rows.next().await? {
+        let name_value = row.get_value(0)?;
+        if let Value::Text(name) = name_value {
+            assert_eq!(name, "Updated");
         }
     }
 
-    // Get the updated user ID for posts
-    let mut rows = conn
-        .query(
-            "SELECT id FROM users WHERE name = ?",
-            (Value::Text("Updated".to_string()),),
-        )
-        .await
-        .unwrap();
-    let row = rows.next().await.unwrap().unwrap();
-    let user_id = row.get::<i64>(0).unwrap();
+    conn.execute(
+        "INSERT INTO posts (title, body, published, user_id, created_at) 
+                       VALUES (?, ?, ?, ?, datetime('now')), (?, ?, ?, ?, datetime('now'))",
+        vec![
+            Value::Text("Draft 1".to_string()),
+            Value::Text("Content 1".to_string()),
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Text("Draft 2".to_string()),
+            Value::Text("Content 2".to_string()),
+            Value::Integer(0),
+            Value::Integer(1),
+        ],
+    )
+    .await?;
 
-    // Now the critical part: insert posts and do boolean update (this is where diesel fails)
-    let now = "2024-01-01 12:00:00";
-    for (title, body) in &[("Draft 1", "Content 1"), ("Draft 2", "Content 2")] {
-        conn.execute("INSERT INTO posts (title, body, published, user_id, created_at) VALUES (?, ?, ?, ?, ?)", (
-            Value::Text(title.to_string()),
-            Value::Text(body.to_string()),
-            Value::Integer(0), // false as integer
-            Value::Integer(user_id),
-            Value::Text(now.to_string()),
-        )).await.unwrap();
-    }
-
-    // The critical boolean update that fails in diesel
-    println!(
-        "Executing the critical boolean update: UPDATE posts SET published = ? WHERE published = ?"
-    );
-    println!("Binds: [{:?}, {:?}]", Value::Integer(1), Value::Integer(0));
-
-    let result = conn
+    let published = conn
         .execute(
             "UPDATE posts SET published = ? WHERE published = ?",
-            (
-                Value::Integer(1), // true
-                Value::Integer(0), // false
-            ),
+            vec![Value::Integer(1), Value::Integer(0)],
         )
-        .await;
+        .await?;
+    assert_eq!(published, 2);
 
-    match result {
-        Ok(changes) => {
-            println!("Boolean update succeeded! Changes: {}", changes);
-        }
-        Err(e) => {
-            println!("Boolean update failed: {}", e);
-            if e.to_string().contains("MustBeInt") {
-                println!("*** REPRODUCED MustBeInt ERROR in boolean update! ***");
-                panic!("Reproduced MustBeInt in boolean update: {}", e);
-            } else {
-                panic!("Boolean update failed: {}", e);
-            }
-        }
-    }
-
-    // Verify the updates worked
-    let mut rows = conn
-        .query(
-            "SELECT COUNT(*) FROM posts WHERE published = ?",
-            (Value::Integer(1),),
-        )
-        .await
-        .unwrap();
-    let row = rows.next().await.unwrap().unwrap();
-    let count = row.get::<i64>(0).unwrap();
-    assert_eq!(count, 2);
-
-    println!("Pure Turso test passed - ALL operations including boolean updates work fine!");
+    Ok(())
 }
 
-/// Test boolean operations specifically
 #[tokio::test]
-async fn test_pure_turso_boolean_operations() {
-    let db = Builder::new_local(":memory:").build().await.unwrap();
-    let conn = db.connect().unwrap();
+async fn test_delete_operations() -> Result<(), turso::Error> {
+    let conn = connection().await;
 
-    // Create posts table
-    let create_posts_sql = "
-        CREATE TABLE posts (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL,
-            published BOOLEAN NOT NULL DEFAULT 0
-        )
-    ";
-
-    conn.execute(create_posts_sql, ()).await.unwrap();
-
-    // Insert test posts
-    for (title, published) in &[("Draft 1", false), ("Draft 2", false)] {
+    for i in 1..=5 {
         conn.execute(
-            "INSERT INTO posts (title, published) VALUES (?, ?)",
-            (
-                Value::Text(title.to_string()),
-                Value::Integer(if *published { 1 } else { 0 }),
-            ),
+            "INSERT INTO users (name) VALUES (?)",
+            vec![Value::Text(format!("DeleteUser{}", i))],
         )
-        .await
-        .unwrap();
+        .await?;
     }
 
-    // Try the boolean update operation that might cause MustBeInt
-    println!("Executing: UPDATE posts SET published = ? WHERE published = ?");
-    println!("Binds: [{:?}, {:?}]", Value::Integer(1), Value::Integer(0));
+    let mut stmt = conn.prepare("SELECT count(*) FROM users").await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    if let Some(row) = rows.next().await? {
+        let count_value = row.get_value(0)?;
+        if let Value::Integer(count) = count_value {
+            assert_eq!(count, 5);
+        }
+    }
 
-    let result = conn
+    let deleted = conn
         .execute(
-            "UPDATE posts SET published = ? WHERE published = ?",
-            (
-                Value::Integer(1), // true
-                Value::Integer(0), // false
-            ),
+            "DELETE FROM users WHERE name LIKE ? AND id > ?",
+            vec![Value::Text("DeleteUser%".to_string()), Value::Integer(2)],
         )
-        .await;
+        .await?;
+    assert_eq!(deleted, 3);
 
-    match result {
-        Ok(changes) => {
-            println!("Boolean update succeeded! Changes: {}", changes);
-        }
-        Err(e) => {
-            println!("Boolean update failed with error: {}", e);
-            if e.to_string().contains("MustBeInt") {
-                println!("*** FOUND MustBeInt ERROR ***");
-                panic!("Pure Turso boolean update failed: {}", e);
-            }
-        }
-    }
+    conn.execute("INSERT INTO posts (title, body, published, user_id, created_at) 
+                       VALUES (?, ?, ?, ?, datetime('now')), (?, ?, ?, ?, datetime('now')), (?, ?, ?, ?, datetime('now'))", 
+        vec![
+            Value::Text("Delete Post 1".to_string()),
+            Value::Text("Will be deleted".to_string()),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Text("Delete Post 2".to_string()),
+            Value::Text("Will be deleted".to_string()),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Text("Delete Post 3".to_string()),
+            Value::Text("Will be deleted".to_string()),
+            Value::Integer(1),
+            Value::Integer(1)
+        ])
+        .await?;
 
-    println!("Pure Turso boolean test passed!");
+    conn.execute(
+        "DELETE FROM posts WHERE title LIKE ?",
+        vec![Value::Text("Delete Post%".to_string())],
+    )
+    .await?;
+
+    Ok(())
 }
 
-/// Test with various value types to see which one triggers MustBeInt
 #[tokio::test]
-async fn test_pure_turso_value_types() {
-    let db = Builder::new_local(":memory:").build().await.unwrap();
-    let conn = db.connect().unwrap();
+async fn test_ordering_and_limiting() -> Result<(), turso::Error> {
+    let conn = connection().await;
 
-    // Create a test table with various column types
-    let create_sql = "
-        CREATE TABLE test_table (
-            id INTEGER PRIMARY KEY,
-            text_col TEXT,
-            int_col INTEGER,
-            real_col REAL,
-            bool_col BOOLEAN
+    let insert_result = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?), (?), (?), (?), (?)",
+            vec![
+                Value::Text("Zara".to_string()),
+                Value::Text("Alice".to_string()),
+                Value::Text("Bob".to_string()),
+                Value::Text("Charlie".to_string()),
+                Value::Text("David".to_string()),
+            ],
         )
-    ";
+        .await?;
+    assert_eq!(insert_result, 5);
 
-    conn.execute(create_sql, ()).await.unwrap();
-
-    // Test different value types
-    let test_values = vec![
-        ("Text", Value::Text("test".to_string())),
-        ("Integer", Value::Integer(42)),
-        ("Real", Value::Real(3.14)),
-        ("Boolean_as_Integer", Value::Integer(1)),
-        ("Boolean_as_Real", Value::Real(1.0)),
-        ("Null", Value::Null),
-    ];
-
-    for (test_name, value) in test_values {
-        println!("\nTesting value type: {} -> {:?}", test_name, value);
-
-        // Insert the value
-        let result = conn.execute("INSERT INTO test_table (text_col, int_col, real_col, bool_col) VALUES (?, ?, ?, ?)", (
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value.clone(),
-        )).await;
-
-        match result {
-            Ok(_) => println!("  Insert succeeded"),
-            Err(e) => {
-                println!("  Insert failed: {}", e);
-                if e.to_string().contains("MustBeInt") {
-                    println!(
-                        "  *** FOUND MustBeInt ERROR on INSERT with value type: {} ***",
-                        test_name
-                    );
-                }
-            }
+    let mut stmt = conn
+        .prepare("SELECT name FROM users ORDER BY name ASC LIMIT 3")
+        .await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    let mut names = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let name_value = row.get_value(0)?;
+        if let Value::Text(name) = name_value {
+            names.push(name);
         }
+    }
+    assert_eq!(names.len(), 3);
+    assert_eq!(names[0], "Alice");
 
-        // Try to update with the same value type
-        let result = conn
-            .execute(
-                "UPDATE test_table SET text_col = ? WHERE id = (SELECT MAX(id) FROM test_table)",
-                (value.clone(),),
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_aggregate_functions() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    for i in 1..=10 {
+        conn.execute(
+            "INSERT INTO users (name) VALUES (?)",
+            vec![Value::Text(format!("User{:02}", i))],
+        )
+        .await?;
+    }
+
+    for i in 1..=5 {
+        for j in 1..=i {
+            conn.execute(
+                "INSERT INTO posts (title, body, published, user_id, created_at) 
+                 VALUES (?, ?, ?, ?, datetime('now'))",
+                vec![
+                    Value::Text(format!("Post {}-{}", i, j)),
+                    Value::Text(format!("Content for post {}-{}", i, j)),
+                    Value::Integer(1),
+                    Value::Integer(i),
+                ],
             )
-            .await;
-
-        match result {
-            Ok(_) => println!("  Update succeeded"),
-            Err(e) => {
-                println!("  Update failed: {}", e);
-                if e.to_string().contains("MustBeInt") {
-                    println!(
-                        "  *** FOUND MustBeInt ERROR on UPDATE with value type: {} ***",
-                        test_name
-                    );
-                }
-            }
+            .await?;
         }
     }
 
-    println!("Value type testing completed!");
+    let mut stmt = conn.prepare("SELECT count(*) FROM users").await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    if let Some(row) = rows.next().await? {
+        let count_value = row.get_value(0)?;
+        if let Value::Integer(count) = count_value {
+            assert_eq!(count, 10);
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO comments (post_id, user_id, content, rating) 
+                       VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Text("Great!".to_string()),
+            Value::Integer(5),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Text("Good".to_string()),
+            Value::Integer(4),
+            Value::Integer(1),
+            Value::Integer(3),
+            Value::Text("OK".to_string()),
+            Value::Integer(3),
+        ],
+    )
+    .await?;
+
+    let comment_insert = conn
+        .execute(
+            "INSERT INTO comments (post_id, user_id, content, rating) 
+                       VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
+            vec![
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Text("Great!".to_string()),
+                Value::Integer(5),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Text("Good".to_string()),
+                Value::Integer(4),
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::Text("OK".to_string()),
+                Value::Integer(3),
+            ],
+        )
+        .await?;
+    assert_eq!(comment_insert, 3);
+
+    Ok(())
 }
 
-/// Test the exact working pattern vs failing pattern side by side
 #[tokio::test]
-async fn test_limit_clause_issue() -> Result<(), turso::Error> {
-    let db = Builder::new_local(":memory:").build().await.unwrap();
-    let conn = db.connect().unwrap();
+async fn test_join_operations() -> Result<(), turso::Error> {
+    let conn = connection().await;
 
-    // Setup
     conn.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
-        (),
+        "INSERT INTO users (name) VALUES (?), (?), (?)",
+        vec![
+            Value::Text("Author1".to_string()),
+            Value::Text("Author2".to_string()),
+            Value::Text("Author3".to_string()),
+        ],
     )
-    .await
-    .unwrap();
-    conn.execute(
-        "INSERT INTO users (name) VALUES (?)",
-        (Value::Text("Updated".to_string()),),
-    )
-    .await
-    .unwrap();
+    .await?;
 
-    let sql = "SELECT `users`.`id`, `users`.`name` FROM `users` WHERE (`users`.`name` = ?) LIMIT ?";
-    let params = vec![Value::Text("Updated".to_string()), Value::Integer(1)];
-
-    // Pattern 1: The working pattern from earlier tests (no row iteration)
-    println!("Testing working pattern (no row iteration)...");
-    {
-        let mut stmt = conn.prepare(sql).await.unwrap();
-        let result = stmt.query(params.clone()).await;
-        match result {
-            Ok(_) => println!("  Working pattern - SUCCESS"),
-            Err(e) => println!("  Working pattern - FAILED: {}", e),
+    for i in 1..=3 {
+        for j in 0..i {
+            conn.execute(
+                "INSERT INTO posts (title, body, published, user_id, created_at) 
+                 VALUES (?, ?, ?, ?, datetime('now'))",
+                vec![
+                    Value::Text(format!("Post by Author{}", i)),
+                    Value::Text(format!("Content {}", j)),
+                    Value::Integer(1),
+                    Value::Integer(i),
+                ],
+            )
+            .await?;
         }
     }
 
-    // Pattern 2: The failing pattern (with row iteration)
-    println!("Testing failing pattern (with row iteration)...");
-    {
-        let mut prepared = conn.prepare(sql).await.unwrap();
-        let mut rows = prepared.query(params.clone()).await.unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT posts.title, users.name FROM posts 
+                               INNER JOIN users ON posts.user_id = users.id",
+        )
+        .await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    let mut count = 0;
+    while let Some(_) = rows.next().await? {
+        count += 1;
+    }
+    assert_eq!(count, 6);
 
-        println!("  Query executed, now trying rows.next()...");
-        let result = rows.next().await;
-        match result {
-            Ok(Some(_)) => println!("  Failing pattern - SUCCESS (got row)"),
-            Ok(None) => println!("  Failing pattern - SUCCESS (no rows)"),
-            Err(e) => {
-                println!("  Failing pattern - FAILED: {}", e);
-                if e.to_string().contains("MustBeInt") {
-                    println!("  *** CONFIRMED: rows.next() causes MustBeInt error! ***");
-                }
-            }
+    conn.execute(
+        "INSERT INTO categories (name, description) VALUES (?, ?), (?, ?)",
+        vec![
+            Value::Text("Tech".to_string()),
+            Value::Text("Technology posts".to_string()),
+            Value::Text("Life".to_string()),
+            Value::Null,
+        ],
+    )
+    .await?;
+
+    conn.execute(
+        "INSERT INTO post_categories (post_id, category_id) VALUES (?, ?), (?, ?), (?, ?)",
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(1),
+            Value::Integer(3),
+            Value::Integer(1),
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_nullable_fields() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    conn.execute(
+        "INSERT INTO categories (name, description) VALUES 
+                       (?, ?), (?, ?), (?, ?)",
+        vec![
+            Value::Text("WithDesc".to_string()),
+            Value::Text("Has description".to_string()),
+            Value::Text("NoDesc".to_string()),
+            Value::Null,
+            Value::Text("EmptyDesc".to_string()),
+            Value::Text("".to_string()),
+        ],
+    )
+    .await?;
+
+    let category_insert = conn
+        .execute(
+            "INSERT INTO categories (name, description) VALUES 
+                       (?, ?), (?, ?), (?, ?)",
+            vec![
+                Value::Text("WithDesc".to_string()),
+                Value::Text("Has description".to_string()),
+                Value::Text("NoDesc".to_string()),
+                Value::Null,
+                Value::Text("EmptyDesc".to_string()),
+                Value::Text("".to_string()),
+            ],
+        )
+        .await?;
+    assert_eq!(category_insert, 3);
+
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?), (?)",
+        vec![
+            Value::Text("CommentUser1".to_string()),
+            Value::Text("CommentUser2".to_string()),
+        ],
+    )
+    .await?;
+
+    conn.execute(
+        "INSERT INTO posts (title, body, published, user_id, created_at) 
+                       VALUES (?, ?, ?, ?, datetime('now'))",
+        vec![
+            Value::Text("Test Post".to_string()),
+            Value::Text("Content".to_string()),
+            Value::Integer(1),
+            Value::Integer(1),
+        ],
+    )
+    .await?;
+
+    conn.execute(
+        "INSERT INTO comments (post_id, user_id, content, rating) 
+                       VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Text("Rated".to_string()),
+            Value::Integer(5),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Text("Unrated".to_string()),
+            Value::Null,
+        ],
+    )
+    .await?;
+
+    let comment_insert2 = conn
+        .execute(
+            "INSERT INTO comments (post_id, user_id, content, rating) 
+                       VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            vec![
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Text("Rated".to_string()),
+                Value::Integer(5),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Text("Unrated".to_string()),
+                Value::Null,
+            ],
+        )
+        .await?;
+    assert_eq!(comment_insert2, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?), (?), (?), (?), (?)",
+        vec![
+            Value::Text("Alice".to_string()),
+            Value::Text("Bob".to_string()),
+            Value::Text("Alice".to_string()),
+            Value::Text("Charlie".to_string()),
+            Value::Text("Bob".to_string()),
+        ],
+    )
+    .await?;
+
+    let user_insert = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?), (?), (?), (?), (?)",
+            vec![
+                Value::Text("Alice".to_string()),
+                Value::Text("Bob".to_string()),
+                Value::Text("Alice".to_string()),
+                Value::Text("Charlie".to_string()),
+                Value::Text("Bob".to_string()),
+            ],
+        )
+        .await?;
+    assert_eq!(user_insert, 5);
+
+    for i in 1..=5 {
+        let post_count = i % 3 + 1;
+        for j in 1..=post_count {
+            conn.execute(
+                "INSERT INTO posts (title, body, published, user_id, created_at) 
+                 VALUES (?, ?, ?, ?, datetime('now'))",
+                vec![
+                    Value::Text(format!("Post {}", j)),
+                    Value::Text("Content".to_string()),
+                    Value::Integer(1),
+                    Value::Integer(i),
+                ],
+            )
+            .await?;
         }
     }
 
-    println!("Pattern comparison completed!");
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT name FROM users ORDER BY name")
+        .await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    let mut distinct_names = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let name_value = row.get_value(0)?;
+        if let Value::Text(name) = name_value {
+            distinct_names.push(name);
+        }
+    }
+    assert!(distinct_names.contains(&"Alice".to_string()));
+    assert!(distinct_names.contains(&"Bob".to_string()));
+    assert!(distinct_names.contains(&"Charlie".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_transactions() -> Result<(), turso::Error> {
+    let conn = connection().await;
+
+    let initial_insert = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?), (?)",
+            vec![
+                Value::Text("John Doe".to_string()),
+                Value::Text("Jane Doe".to_string()),
+            ],
+        )
+        .await?;
+    assert_eq!(initial_insert, 2);
+
+    let dave_insert = conn
+        .execute(
+            "INSERT INTO users (name) VALUES (?)",
+            vec![Value::Text("Dave".to_string())],
+        )
+        .await?;
+    assert_eq!(dave_insert, 1);
+
     Ok(())
 }
