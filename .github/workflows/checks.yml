@@ -17,7 +17,6 @@ jobs:
     name: cargo-clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: awalsh128/cache-apt-pkgs-action@latest
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo clippy --all-targets --all-features -- -D warnings
@@ -30,7 +29,6 @@ jobs:
       RUST_LOG: debug
       DATABASE_URL: ":memory:"
     steps:
-      - uses: awalsh128/cache-apt-pkgs-action@latest
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --all-features -- --nocapture
