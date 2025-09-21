@@ -55,22 +55,17 @@ impl TursoConnection {
         // TODO: this is a workaround for handling unexpected rows during execution, means it should be a query not an execute
         let rows_affected = match result {
             Ok(res) => res,
-            Err(e) => {
-                match e {
-                    turso::Error::SqlExecutionFailure(msg) => {
-                        match msg.as_str() {
-                            "unexpected row during execution" => {
-                                return self.query(stmt).await;
-                            }
-                            _ => {
-                                return Err(turso::Error::SqlExecutionFailure(msg));
-                            }
-                        }
+            Err(e) => match e {
+                turso::Error::SqlExecutionFailure(msg) => match msg.as_str() {
+                    "unexpected row during execution" => {
+                        return self.query(stmt).await;
                     }
-                    _ => return Err(e),
-                    
-                }
-            }
+                    _ => {
+                        return Err(turso::Error::SqlExecutionFailure(msg));
+                    }
+                },
+                _ => return Err(e),
+            },
         };
 
         Ok(TursoResult {

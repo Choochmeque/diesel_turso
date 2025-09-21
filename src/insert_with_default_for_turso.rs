@@ -49,6 +49,8 @@ impl Any<Yes> for Yes {
     type Out = Yes;
 }
 
+// TODO: do we need it?
+#[allow(dead_code)]
 pub trait ContainsDefaultableValue {
     type Out: Any<Yes> + Any<No>;
 }
@@ -82,6 +84,8 @@ where
     type Out = T::Out;
 }
 
+// TODO: do we need it?
+#[allow(dead_code)]
 pub trait DebugQueryHelper<ContainsDefaultableValue> {
     fn fmt_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
     fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;

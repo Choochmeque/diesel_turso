@@ -1,0 +1,38 @@
+name: Checks
+
+on: [ pull_request, push ]
+
+jobs:
+  # Code formatting.
+  fmt:
+    name: cargo-fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all -- --check
+
+  # Static analyzer.
+  clippy:
+    name: cargo-clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Run tests.
+  test:
+    name: cargo-test
+    runs-on: ubuntu-latest
+    env:
+      RUST_LOG: debug
+      DATABASE_URL: ":memory:"
+    steps:
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --all-features -- --nocapture
+
+  
