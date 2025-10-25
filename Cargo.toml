@@ -27,7 +27,7 @@ diesel_migrations = "2.3"
 diesel-async = "0.7"
 futures-util = "0.3.31"
 chrono = { version = "0.4", optional = true }
-turso = { git = "https://github.com/tursodatabase/turso", rev = "eb835c3" }
+turso = { git = "https://github.com/tursodatabase/turso", rev = "c2ac8ec" }
 
 [dev-dependencies]
 tokio = { version = "1.12.0", features = ["rt", "macros", "rt-multi-thread"] }
