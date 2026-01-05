@@ -52,20 +52,13 @@ impl TursoConnection {
         let params: Vec<Value> = stmt.binds.clone();
         let result = self.conn.execute(&stmt.sql, params).await;
 
-        // TODO: this is a workaround for handling unexpected rows during execution, means it should be a query not an execute
+        // TODO: Workaround: some statements (like PRAGMA) return rows but are called via execute()
         let rows_affected = match result {
             Ok(res) => res,
-            Err(e) => match e {
-                turso::Error::SqlExecutionFailure(msg) => match msg.as_str() {
-                    "unexpected row during execution" => {
-                        return self.query(stmt).await;
-                    }
-                    _ => {
-                        return Err(turso::Error::SqlExecutionFailure(msg));
-                    }
-                },
-                _ => return Err(e),
-            },
+            Err(turso::Error::Misuse(msg)) if msg.contains("unexpected row") => {
+                return self.query(stmt).await;
+            }
+            Err(e) => return Err(e),
         };
 
         Ok(TursoResult {
