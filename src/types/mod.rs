@@ -169,10 +169,22 @@ impl ToSql<sql_types::Text, TursoBackend> for str {
     }
 }
 
+impl FromSql<sql_types::Text, TursoBackend> for String {
+    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
+        Ok(value.read_string())
+    }
+}
+
 impl FromSql<sql_types::Binary, TursoBackend> for *const [u8] {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
         let bytes = value.read_blob();
         Ok(Box::leak(bytes.into_boxed_slice()) as *const [u8])
+    }
+}
+
+impl FromSql<sql_types::Binary, TursoBackend> for Vec<u8> {
+    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
+        Ok(value.read_blob())
     }
 }
 
@@ -182,13 +194,6 @@ impl ToSql<sql_types::Binary, TursoBackend> for [u8] {
         Ok(IsNull::No)
     }
 }
-
-// impl FromSql<sql_types::Text, TursoBackend> for &str {
-//     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-//         let text = value.read_string();
-//         Ok(text.as_ref())
-//     }
-// }
 
 // ------
 

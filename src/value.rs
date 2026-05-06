@@ -104,6 +104,7 @@ impl TursoValue {
         }
     }
 
+    #[cfg(feature = "chrono")]
     pub(crate) fn parse_string<R>(&self, f: impl FnOnce(&str) -> R) -> R {
         match &self.value {
             Value::Text(s) => f(s),
