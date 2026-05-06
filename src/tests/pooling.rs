@@ -95,15 +95,6 @@ async fn save_changes_mobc() {
 
     let u = users::table.first::<User>(&mut conn).await.unwrap();
     assert_eq!(u.name, "John");
-
-    // #[cfg(not(feature = "sqlite"))]
-    // {
-    //     let mut u = u;
-    //     u.name = "Jane".into();
-    //     let u2: User = u.save_changes(&mut conn).await.unwrap();
-
-    //     assert_eq!(u2.name, "Jane");
-    // }
 }
 
 #[tokio::test]
@@ -119,7 +110,9 @@ async fn save_changes_r2d2() {
     let config: ConnectionManager<AsyncWrapper> = ConnectionManager::new(&db_url);
     let pool = Pool::builder().build(config).unwrap();
 
-    let mut conn = pool.get().unwrap();
+    let mut conn = tokio::task::spawn_blocking(move || pool.get().unwrap())
+        .await
+        .unwrap();
 
     super::setup(&mut conn).await;
 
@@ -132,12 +125,9 @@ async fn save_changes_r2d2() {
     let u = users::table.first::<User>(&mut conn).await.unwrap();
     assert_eq!(u.name, "John");
 
-    // #[cfg(not(feature = "sqlite"))]
-    // {
-    //     let mut u = u;
-    //     u.name = "Jane".into();
-    //     let u2: User = u.save_changes(&mut conn).await.unwrap();
-
-    //     assert_eq!(u2.name, "Jane");
-    // }
+    // The wrapper owns an internal tokio runtime; dropping it on a tokio
+    // worker thread would panic, so move the drop to a blocking thread.
+    tokio::task::spawn_blocking(move || drop(conn))
+        .await
+        .unwrap();
 }
