@@ -128,34 +128,20 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 )
             })?;
 
-            if let Some(error) = result.error() {
+            if let Some(error) = result.error {
                 return Err(diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::Unknown,
                     Box::new(TursoError { message: error }),
                 ));
             }
 
-            let results = result.results().unwrap_or_else(Vec::new);
-
-            if results.is_empty() {
-                return Ok(stream::iter(vec![]).boxed());
-            }
-
-            let field_keys: Vec<String> = if !results.is_empty() && !results[0].is_empty() {
-                results[0].iter().map(|(key, _)| key.clone()).collect()
-            } else {
-                Vec::new()
-            };
-
-            let rows: Vec<QueryResult<TursoRow>> = results
-                .iter()
-                .map(|row| {
-                    let values: Vec<turso::Value> = row.iter().map(|(_, v)| v.clone()).collect();
-                    Ok(TursoRow::from_turso_values(values, field_keys.clone()))
-                })
+            let column_names = result.column_names;
+            let rows: Vec<QueryResult<TursoRow>> = result
+                .rows
+                .into_iter()
+                .map(|values| Ok(TursoRow::from_turso_values(values, column_names.clone())))
                 .collect();
-            let iter = stream::iter(rows).boxed();
-            Ok(iter)
+            Ok(stream::iter(rows).boxed())
         }
         .boxed()
     }
@@ -189,15 +175,14 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 )
             })?;
 
-            if let Some(error) = result.error() {
+            if let Some(error) = result.error {
                 return Err(diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::Unknown,
                     Box::new(TursoError { message: error }),
                 ));
             }
 
-            let meta = result.meta();
-            Ok(meta.changes)
+            Ok(result.changes)
         }
         .boxed()
     }

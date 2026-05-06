@@ -1,7 +1,4 @@
-use std::{
-    cell::{Ref, RefCell},
-    rc::Rc,
-};
+use std::sync::Arc;
 
 use diesel::row::{Field, PartialRow, Row, RowIndex, RowSealed};
 use turso::Value;
@@ -9,8 +6,8 @@ use turso::Value;
 use crate::{backend::TursoBackend, value::TursoValue};
 
 pub struct TursoRow {
-    values: Rc<RefCell<Vec<Value>>>,
-    field_vec: Vec<String>,
+    values: Vec<Value>,
+    fields: Arc<[String]>,
 }
 
 // SAFETY: Turso values are thread-safe
@@ -18,11 +15,8 @@ unsafe impl Send for TursoRow {}
 unsafe impl Sync for TursoRow {}
 
 impl TursoRow {
-    pub fn from_turso_values(values: Vec<Value>, field_vec: Vec<String>) -> Self {
-        Self {
-            values: Rc::new(RefCell::new(values)),
-            field_vec,
-        }
+    pub fn from_turso_values(values: Vec<Value>, fields: Arc<[String]>) -> Self {
+        Self { values, fields }
     }
 }
 
@@ -38,7 +32,7 @@ impl<'stmt> Row<'stmt, TursoBackend> for TursoRow {
     type InnerPartialRow = Self;
 
     fn field_count(&self) -> usize {
-        self.field_vec.len()
+        self.fields.len()
     }
 
     fn get<'b, I>(&'b self, idx: I) -> Option<Self::Field<'b>>
@@ -47,11 +41,9 @@ impl<'stmt> Row<'stmt, TursoBackend> for TursoRow {
         Self: diesel::row::RowIndex<I>,
     {
         let index = self.idx(idx)?;
-        let name = self.field_vec.get(index)?;
         Some(TursoField {
-            name: name.to_string(),
-            values: self.values.borrow(),
-            index,
+            name: self.fields.get(index)?,
+            value: self.values.get(index)?,
         })
     }
 
@@ -65,7 +57,7 @@ impl<'stmt> Row<'stmt, TursoBackend> for TursoRow {
 
 impl RowIndex<usize> for TursoRow {
     fn idx(&self, idx: usize) -> Option<usize> {
-        if idx < self.field_vec.len() {
+        if idx < self.fields.len() {
             Some(idx)
         } else {
             None
@@ -75,26 +67,24 @@ impl RowIndex<usize> for TursoRow {
 
 impl RowIndex<&str> for TursoRow {
     fn idx(&self, field: &str) -> Option<usize> {
-        self.field_vec.iter().position(|i| i == field)
+        self.fields.iter().position(|i| i == field)
     }
 }
 
 pub struct TursoField<'stmt> {
-    values: Ref<'stmt, Vec<Value>>,
-    name: String,
-    index: usize,
+    name: &'stmt String,
+    value: &'stmt Value,
 }
 
 impl<'stmt> Field<'stmt, TursoBackend> for TursoField<'stmt> {
     fn field_name(&self) -> Option<&str> {
-        Some(&self.name)
+        Some(self.name)
     }
 
     fn value(&self) -> Option<TursoValue> {
-        let turso_value = self.values.get(self.index)?;
-        match turso_value {
+        match self.value {
             Value::Null => None,
-            _ => Some(TursoValue::from_turso_value(turso_value.clone())),
+            _ => Some(TursoValue::from_turso_value(self.value.clone())),
         }
     }
 }

@@ -19,7 +19,8 @@ pub struct TursoPreparedStatement {
 
 #[derive(Debug, Clone)]
 pub struct TursoResult {
-    pub results: Vec<Vec<(String, Value)>>,
+    pub column_names: Arc<[String]>,
+    pub rows: Vec<Vec<Value>>,
     pub error: Option<String>,
     pub changes: usize,
 }
@@ -62,7 +63,8 @@ impl TursoConnection {
         };
 
         Ok(TursoResult {
-            results: Vec::new(),
+            column_names: Arc::from([]),
+            rows: Vec::new(),
             error: None,
             changes: rows_affected as usize,
         })
@@ -75,30 +77,27 @@ impl TursoConnection {
     }
 
     pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
-        // Prepare and execute query
         let mut prepared = self.conn.prepare(&stmt.sql).await?;
         let params: Vec<Value> = stmt.binds.clone();
-        let mut rows = prepared.query(params).await?;
-        let columns = prepared.columns();
+        let mut rows_iter = prepared.query(params).await?;
+        let column_names: Arc<[String]> = prepared
+            .columns()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        let column_count = column_names.len();
 
-        let mut results = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let mut row_data = Vec::new();
-            let column_count = row.column_count();
-            for idx in 0..column_count {
-                // TODO: Since turso Row doesn't expose column names in row, let's try to get them
-                let col_name = match columns.get(idx) {
-                    Some(col) => col.name().to_string(),
-                    None => format!("col_{}", idx),
-                };
-                let value = row.get_value(idx)?;
-                row_data.push((col_name, value));
-            }
-            results.push(row_data);
+        let mut rows = Vec::new();
+        while let Some(row) = rows_iter.next().await? {
+            let row_data: Vec<Value> = (0..column_count)
+                .map(|idx| row.get_value(idx))
+                .collect::<Result<_, _>>()?;
+            rows.push(row_data);
         }
 
         Ok(TursoResult {
-            results,
+            column_names,
+            rows,
             error: None,
             changes: 0,
         })
@@ -110,29 +109,4 @@ impl TursoPreparedStatement {
         self.binds = values;
         self
     }
-}
-
-impl TursoResult {
-    pub fn results(&self) -> Option<Vec<Vec<(String, Value)>>> {
-        if self.results.is_empty() {
-            None
-        } else {
-            Some(self.results.clone())
-        }
-    }
-
-    pub fn error(&self) -> Option<String> {
-        self.error.clone()
-    }
-
-    pub fn meta(&self) -> TursoMeta {
-        TursoMeta {
-            changes: self.changes,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TursoMeta {
-    pub changes: usize,
 }
