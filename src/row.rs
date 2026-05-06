@@ -10,10 +10,6 @@ pub struct TursoRow {
     fields: Arc<[String]>,
 }
 
-// SAFETY: Turso values are thread-safe
-unsafe impl Send for TursoRow {}
-unsafe impl Sync for TursoRow {}
-
 impl TursoRow {
     pub fn from_turso_values(values: Vec<Value>, fields: Arc<[String]>) -> Self {
         Self { values, fields }

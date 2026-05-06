@@ -13,13 +13,6 @@ mod date_and_time;
 
 // VarChar is just an alias for Text in diesel, so we only need Text implementations
 
-impl FromSql<sql_types::Text, TursoBackend> for *const str {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        let text = value.read_string();
-        Ok(Box::leak(text.into_boxed_str()) as *const str)
-    }
-}
-
 // Boolean
 impl HasSqlType<sql_types::Bool> for TursoBackend {
     fn metadata(_lookup: &mut ()) -> TursoType {
@@ -172,13 +165,6 @@ impl ToSql<sql_types::Text, TursoBackend> for str {
 impl FromSql<sql_types::Text, TursoBackend> for String {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
         Ok(value.read_string())
-    }
-}
-
-impl FromSql<sql_types::Binary, TursoBackend> for *const [u8] {
-    fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        let bytes = value.read_blob();
-        Ok(Box::leak(bytes.into_boxed_slice()) as *const [u8])
     }
 }
 
