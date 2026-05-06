@@ -217,30 +217,31 @@ type TestBackend = TursoBackend;
 
 #[tokio::test]
 async fn test_basic_insert_and_load() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     let res = diesel::sql_query("PRAGMA journal_mode = WAL;")
-        .execute(conn)
+        .execute(&mut conn)
         .await;
     assert!(res.is_ok(), "Failed to set journal mode");
 
     // Insertion split into 2 since Sqlite batch insert isn't supported for diesel_async yet
     let res = diesel::insert_into(users::table)
         .values(users::name.eq("John Doe"))
-        .execute(conn)
+        .execute(&mut conn)
         .await;
     assert_eq!(res, Ok(1), "User count does not match");
     let res = diesel::insert_into(users::table)
         .values(users::name.eq("Jane Doe"))
-        .execute(conn)
+        .execute(&mut conn)
         .await;
     assert_eq!(res, Ok(1), "User count does not match");
-    let users = users::table.load::<User>(conn).await?;
+    let users = users::table.load::<User>(&mut conn).await?;
     assert_eq!(&users[0].name, "John Doe", "User name [0] does not match");
     assert_eq!(&users[1].name, "Jane Doe", "User name [1] does not match");
 
-    transaction_test(conn).await?;
+    transaction_test(&mut conn).await?;
 
+    drop(conn);
     Ok(())
 }
 
@@ -253,7 +254,7 @@ async fn setup(connection: &mut TestConnection) {
     )
     .execute(connection)
     .await
-    .unwrap();
+    .expect("create users table");
 
     diesel::sql_query(
         "CREATE TABLE posts (
@@ -268,7 +269,7 @@ async fn setup(connection: &mut TestConnection) {
     )
     .execute(connection)
     .await
-    .unwrap();
+    .expect("create posts table");
 
     diesel::sql_query(
         "CREATE TABLE comments (
@@ -283,7 +284,7 @@ async fn setup(connection: &mut TestConnection) {
     )
     .execute(connection)
     .await
-    .unwrap();
+    .expect("create comments table");
 
     diesel::sql_query(
         "CREATE TABLE categories (
@@ -294,7 +295,7 @@ async fn setup(connection: &mut TestConnection) {
     )
     .execute(connection)
     .await
-    .unwrap();
+    .expect("create categories table");
 
     diesel::sql_query(
         "CREATE TABLE post_categories (
@@ -307,38 +308,42 @@ async fn setup(connection: &mut TestConnection) {
     )
     .execute(connection)
     .await
-    .unwrap();
+    .expect("create post_categories table");
 }
 
 pub async fn connection() -> TestConnection {
     let mut conn = connection_without_transaction().await;
     setup(&mut conn).await;
-    conn.begin_test_transaction().await.unwrap();
+    conn.begin_test_transaction()
+        .await
+        .expect("begin test transaction");
     conn
 }
 
 async fn connection_without_transaction() -> TestConnection {
-    let db_url = std::env::var("DATABASE_URL").unwrap();
-    TestConnection::establish(&db_url).await.unwrap()
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    TestConnection::establish(&db_url)
+        .await
+        .expect("establish turso connection")
 }
 
 #[tokio::test]
 async fn test_crud_operations() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for name in &["Alice", "Bob", "Charlie"] {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
-    let user_count = users::table.count().get_result::<i64>(conn).await?;
+    let user_count = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(user_count, 3);
 
     let alice = users::table
         .filter(users::name.eq("Alice"))
-        .first::<User>(conn)
+        .first::<User>(&mut conn)
         .await?;
     assert_eq!(alice.name, "Alice");
 
@@ -353,12 +358,12 @@ async fn test_crud_operations() -> QueryResult<()> {
 
     diesel::insert_into(posts::table)
         .values(&new_post)
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
 
     let post = posts::table
         .filter(posts::title.eq("My First Post"))
-        .first::<Post>(conn)
+        .first::<Post>(&mut conn)
         .await?;
 
     assert_eq!(post.title, "My First Post");
@@ -366,17 +371,18 @@ async fn test_crud_operations() -> QueryResult<()> {
     assert!(post.published);
     assert_eq!(post.user_id, alice.id);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_filtering_and_where_clauses() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for i in 1..=10 {
         diesel::insert_into(users::table)
-            .values(users::name.eq(format!("User{}", i)))
-            .execute(conn)
+            .values(users::name.eq(format!("User{i}")))
+            .execute(&mut conn)
             .await?;
     }
 
@@ -384,72 +390,73 @@ async fn test_filtering_and_where_clauses() -> QueryResult<()> {
     for i in 1..=5 {
         diesel::insert_into(posts::table)
             .values(&NewPost {
-                title: &format!("Post {}", i),
-                body: &format!("Content {}", i),
+                title: &format!("Post {i}"),
+                body: &format!("Content {i}"),
                 published: i % 2 == 0,
                 user_id: i,
                 created_at: now,
             })
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let published_posts = posts::table
         .filter(posts::published.eq(true))
-        .load::<Post>(conn)
+        .load::<Post>(&mut conn)
         .await?;
     assert_eq!(published_posts.len(), 2);
 
     let users_with_posts = users::table
         .filter(users::id.le(5))
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(users_with_posts.len(), 5);
 
     let specific_users = users::table
         .filter(users::name.like("User%"))
         .filter(users::id.between(3, 7))
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(specific_users.len(), 5);
 
     let posts_by_user = posts::table
         .filter(posts::user_id.eq_any(vec![1, 3, 5]))
         .filter(posts::published.eq(false))
-        .load::<Post>(conn)
+        .load::<Post>(&mut conn)
         .await?;
     assert_eq!(posts_by_user.len(), 3);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_update_operations() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for name in &["UpdateMe", "KeepMe"] {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let updated_count = diesel::update(users::table)
         .filter(users::name.eq("UpdateMe"))
         .set(users::name.eq("Updated"))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     assert_eq!(updated_count, 1);
 
     let updated_user = users::table
         .filter(users::name.eq("Updated"))
-        .first::<User>(conn)
+        .first::<User>(&mut conn)
         .await?;
     assert_eq!(updated_user.name, "Updated");
 
     let unchanged_user = users::table
         .filter(users::name.eq("KeepMe"))
-        .first::<User>(conn)
+        .first::<User>(&mut conn)
         .await?;
     assert_eq!(unchanged_user.name, "KeepMe");
 
@@ -463,99 +470,101 @@ async fn test_update_operations() -> QueryResult<()> {
                 user_id: updated_user.id,
                 created_at: now,
             })
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let published_count = diesel::update(posts::table)
         .filter(posts::published.eq(false))
         .set(posts::published.eq(true))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     assert_eq!(published_count, 2);
 
     let all_published = posts::table
         .filter(posts::published.eq(false))
-        .load::<Post>(conn)
+        .load::<Post>(&mut conn)
         .await?;
     assert_eq!(all_published.len(), 0);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_delete_operations() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for i in 1..=5 {
         diesel::insert_into(users::table)
-            .values(users::name.eq(format!("DeleteUser{}", i)))
-            .execute(conn)
+            .values(users::name.eq(format!("DeleteUser{i}")))
+            .execute(&mut conn)
             .await?;
     }
 
-    let initial_count = users::table.count().get_result::<i64>(conn).await?;
+    let initial_count = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(initial_count, 5);
 
     let deleted = diesel::delete(users::table)
         .filter(users::name.like("DeleteUser%"))
         .filter(users::id.gt(2))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     assert_eq!(deleted, 3);
 
-    let remaining_count = users::table.count().get_result::<i64>(conn).await?;
+    let remaining_count = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(remaining_count, 2);
 
-    let user = users::table.first::<User>(conn).await?;
+    let user = users::table.first::<User>(&mut conn).await?;
     let now = chrono::Utc::now().naive_utc();
 
     for i in 1..=3 {
         diesel::insert_into(posts::table)
             .values(&NewPost {
-                title: &format!("Delete Post {}", i),
+                title: &format!("Delete Post {i}"),
                 body: "Will be deleted",
                 published: true,
                 user_id: user.id,
                 created_at: now,
             })
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     diesel::delete(posts::table)
         .filter(posts::title.like("Delete Post%"))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
 
-    let posts_count = posts::table.count().get_result::<i64>(conn).await?;
+    let posts_count = posts::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(posts_count, 0);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_ordering_and_limiting() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     let names = vec!["Zara", "Alice", "Bob", "Charlie", "David"];
     for name in &names {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let ordered_asc = users::table
         .order(users::name.asc())
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(ordered_asc[0].name, "Alice");
     assert_eq!(ordered_asc[4].name, "Zara");
 
     let ordered_desc = users::table
         .order(users::name.desc())
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(ordered_desc[0].name, "Zara");
     assert_eq!(ordered_desc[4].name, "Alice");
@@ -563,7 +572,7 @@ async fn test_ordering_and_limiting() -> QueryResult<()> {
     let top_3 = users::table
         .order(users::name.asc())
         .limit(3)
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(top_3.len(), 3);
     assert_eq!(top_3[0].name, "Alice");
@@ -573,23 +582,24 @@ async fn test_ordering_and_limiting() -> QueryResult<()> {
         .order(users::name.asc())
         .limit(2)
         .offset(2)
-        .load::<User>(conn)
+        .load::<User>(&mut conn)
         .await?;
     assert_eq!(middle_2.len(), 2);
     assert_eq!(middle_2[0].name, "Charlie");
     assert_eq!(middle_2[1].name, "David");
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_aggregate_functions() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for i in 1..=10 {
         diesel::insert_into(users::table)
-            .values(users::name.eq(format!("User{:02}", i)))
-            .execute(conn)
+            .values(users::name.eq(format!("User{i:02}")))
+            .execute(&mut conn)
             .await?;
     }
 
@@ -598,32 +608,32 @@ async fn test_aggregate_functions() -> QueryResult<()> {
         for j in 1..=i {
             diesel::insert_into(posts::table)
                 .values(&NewPost {
-                    title: &format!("Post {}-{}", i, j),
-                    body: &format!("Content for post {}-{}", i, j),
+                    title: &format!("Post {i}-{j}"),
+                    body: &format!("Content for post {i}-{j}"),
                     published: true,
                     user_id: i,
                     created_at: now,
                 })
-                .execute(conn)
+                .execute(&mut conn)
                 .await?;
         }
     }
 
-    let total_users = users::table.count().get_result::<i64>(conn).await?;
+    let total_users = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(total_users, 10);
 
-    let total_posts = posts::table.count().get_result::<i64>(conn).await?;
+    let total_posts = posts::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(total_posts, 15);
 
     let max_user_id = users::table
         .select(diesel::dsl::max(users::id))
-        .first::<Option<i32>>(conn)
+        .first::<Option<i32>>(&mut conn)
         .await?;
     assert_eq!(max_user_id, Some(10));
 
     let min_user_id = users::table
         .select(diesel::dsl::min(users::id))
-        .first::<Option<i32>>(conn)
+        .first::<Option<i32>>(&mut conn)
         .await?;
     assert_eq!(min_user_id, Some(1));
 
@@ -650,31 +660,32 @@ async fn test_aggregate_functions() -> QueryResult<()> {
     for comment in &comments {
         diesel::insert_into(comments::table)
             .values(comment)
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let sum_rating = comments::table
         .select(diesel::dsl::sum(comments::rating))
-        .first::<Option<i64>>(conn)
+        .first::<Option<i64>>(&mut conn)
         .await?;
     assert_eq!(sum_rating, Some(12));
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_join_operations() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for name in &["Author1", "Author2", "Author3"] {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
-    let users_list = users::table.load::<User>(conn).await?;
+    let users_list = users::table.load::<User>(&mut conn).await?;
     let now = chrono::Utc::now().naive_utc();
 
     for (i, user) in users_list.iter().enumerate() {
@@ -682,12 +693,12 @@ async fn test_join_operations() -> QueryResult<()> {
             diesel::insert_into(posts::table)
                 .values(&NewPost {
                     title: &format!("Post by {}", user.name),
-                    body: &format!("Content {}", j),
+                    body: &format!("Content {j}"),
                     published: true,
                     user_id: user.id,
                     created_at: now,
                 })
-                .execute(conn)
+                .execute(&mut conn)
                 .await?;
         }
     }
@@ -695,7 +706,7 @@ async fn test_join_operations() -> QueryResult<()> {
     let posts_with_users = posts::table
         .inner_join(users::table)
         .select((posts::title, users::name))
-        .load::<(String, String)>(conn)
+        .load::<(String, String)>(&mut conn)
         .await?;
 
     assert_eq!(posts_with_users.len(), 6);
@@ -704,7 +715,7 @@ async fn test_join_operations() -> QueryResult<()> {
         .inner_join(users::table)
         .filter(users::name.eq("Author1"))
         .select(posts::id)
-        .load::<i32>(conn)
+        .load::<i32>(&mut conn)
         .await?;
     assert_eq!(author1_posts.len(), 1);
 
@@ -712,7 +723,7 @@ async fn test_join_operations() -> QueryResult<()> {
         .inner_join(users::table)
         .filter(users::name.eq("Author3"))
         .select(posts::title)
-        .load::<String>(conn)
+        .load::<String>(&mut conn)
         .await?;
     assert_eq!(author3_posts.len(), 3);
 
@@ -721,18 +732,18 @@ async fn test_join_operations() -> QueryResult<()> {
             categories::name.eq("Tech"),
             categories::description.eq(Some("Technology posts")),
         ))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     diesel::insert_into(categories::table)
         .values((
             categories::name.eq("Life"),
             categories::description.eq(None::<&str>),
         ))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
 
-    let categories_list = categories::table.load::<Category>(conn).await?;
-    let posts_list = posts::table.limit(3).load::<Post>(conn).await?;
+    let categories_list = categories::table.load::<Category>(&mut conn).await?;
+    let posts_list = posts::table.limit(3).load::<Post>(&mut conn).await?;
 
     for post in &posts_list {
         diesel::insert_into(post_categories::table)
@@ -740,7 +751,7 @@ async fn test_join_operations() -> QueryResult<()> {
                 post_categories::post_id.eq(post.id),
                 post_categories::category_id.eq(categories_list[0].id),
             ))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
@@ -749,65 +760,67 @@ async fn test_join_operations() -> QueryResult<()> {
         .inner_join(categories::table.on(post_categories::category_id.eq(categories::id)))
         .filter(categories::name.eq("Tech"))
         .select(posts::title)
-        .load::<String>(conn)
+        .load::<String>(&mut conn)
         .await?;
 
     assert_eq!(tech_posts.len(), 3);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_batch_operations() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     // Create a vector of users for batch insert
     let new_users: Vec<NewUser> = (1..=100)
         .map(|i| NewUser {
-            name: format!("BatchUser{:03}", i),
+            name: format!("BatchUser{i:03}"),
         })
         .collect();
 
     // Batch insert all users at once
     diesel::insert_into(users::table)
         .values(&new_users)
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
 
-    let count = users::table.count().get_result::<i64>(conn).await?;
+    let count = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(count, 100);
 
     // Batch update: update all users with id <= 50
     let batch_update = diesel::update(users::table)
         .filter(users::id.le(50))
         .set(users::name.eq("BatchUpdated"))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     assert_eq!(batch_update, 50);
 
     let updated_count = users::table
         .filter(users::name.eq("BatchUpdated"))
         .count()
-        .get_result::<i64>(conn)
+        .get_result::<i64>(&mut conn)
         .await?;
     assert_eq!(updated_count, 50);
 
     // Batch delete: delete all users with id > 75
     let batch_delete = diesel::delete(users::table)
         .filter(users::id.gt(75))
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
     assert_eq!(batch_delete, 25);
 
-    let remaining = users::table.count().get_result::<i64>(conn).await?;
+    let remaining = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(remaining, 75);
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_nullable_fields() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for (name, desc) in &[
         ("WithDesc", Some("Has description")),
@@ -816,22 +829,22 @@ async fn test_nullable_fields() -> QueryResult<()> {
     ] {
         diesel::insert_into(categories::table)
             .values((categories::name.eq(name), categories::description.eq(*desc)))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
-    let all_categories = categories::table.load::<Category>(conn).await?;
+    let all_categories = categories::table.load::<Category>(&mut conn).await?;
     assert_eq!(all_categories.len(), 3);
 
     let with_desc = categories::table
         .filter(categories::description.is_not_null())
-        .load::<Category>(conn)
+        .load::<Category>(&mut conn)
         .await?;
     assert_eq!(with_desc.len(), 2);
 
     let without_desc = categories::table
         .filter(categories::description.is_null())
-        .load::<Category>(conn)
+        .load::<Category>(&mut conn)
         .await?;
     assert_eq!(without_desc.len(), 1);
     assert_eq!(without_desc[0].name, "NoDesc");
@@ -839,11 +852,11 @@ async fn test_nullable_fields() -> QueryResult<()> {
     for name in &["CommentUser1", "CommentUser2"] {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
-    let users_list = users::table.load::<User>(conn).await?;
+    let users_list = users::table.load::<User>(&mut conn).await?;
     let now = chrono::Utc::now().naive_utc();
 
     diesel::insert_into(posts::table)
@@ -854,10 +867,10 @@ async fn test_nullable_fields() -> QueryResult<()> {
             user_id: users_list[0].id,
             created_at: now,
         })
-        .execute(conn)
+        .execute(&mut conn)
         .await?;
 
-    let post = posts::table.first::<Post>(conn).await?;
+    let post = posts::table.first::<Post>(&mut conn).await?;
 
     let comments = [
         NewComment {
@@ -876,41 +889,42 @@ async fn test_nullable_fields() -> QueryResult<()> {
     for comment in &comments {
         diesel::insert_into(comments::table)
             .values(comment)
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let rated_comments = comments::table
         .filter(comments::rating.is_not_null())
-        .load::<Comment>(conn)
+        .load::<Comment>(&mut conn)
         .await?;
     assert_eq!(rated_comments.len(), 1);
     assert_eq!(rated_comments[0].rating, Some(5));
 
     let unrated_comments = comments::table
         .filter(comments::rating.is_null())
-        .load::<Comment>(conn)
+        .load::<Comment>(&mut conn)
         .await?;
     assert_eq!(unrated_comments.len(), 1);
     assert_eq!(unrated_comments[0].content, "Unrated");
 
+    drop(conn);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_distinct_and_grouping() -> QueryResult<()> {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
 
     for name in &["Alice", "Bob", "Alice", "Charlie", "Bob"] {
         diesel::insert_into(users::table)
             .values(users::name.eq(name))
-            .execute(conn)
+            .execute(&mut conn)
             .await?;
     }
 
     let all_names = users::table
         .select(users::name)
-        .load::<String>(conn)
+        .load::<String>(&mut conn)
         .await?;
     assert_eq!(all_names.len(), 5);
 
@@ -918,25 +932,25 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
         .select(users::name)
         .distinct()
         .order(users::name.asc())
-        .load::<String>(conn)
+        .load::<String>(&mut conn)
         .await?;
     assert_eq!(distinct_names.len(), 3);
     assert_eq!(distinct_names, vec!["Alice", "Bob", "Charlie"]);
 
-    let users_list = users::table.load::<User>(conn).await?;
+    let users_list = users::table.load::<User>(&mut conn).await?;
     let now = chrono::Utc::now().naive_utc();
 
     for user in &users_list {
         for i in 1..=user.id % 3 + 1 {
             diesel::insert_into(posts::table)
                 .values(&NewPost {
-                    title: &format!("Post {}", i),
+                    title: &format!("Post {i}"),
                     body: "Content",
                     published: true,
                     user_id: user.id,
                     created_at: now,
                 })
-                .execute(conn)
+                .execute(&mut conn)
                 .await?;
         }
     }
@@ -944,7 +958,7 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
     let post_counts = posts::table
         .group_by(posts::user_id)
         .select((posts::user_id, diesel::dsl::count(posts::id)))
-        .load::<(i32, i64)>(conn)
+        .load::<(i32, i64)>(&mut conn)
         .await?;
 
     assert!(!post_counts.is_empty());
@@ -953,10 +967,11 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
         .group_by(posts::user_id)
         .select(posts::user_id)
         .having(diesel::dsl::count(posts::id).gt(1))
-        .load::<i32>(conn)
+        .load::<i32>(&mut conn)
         .await?;
 
     assert!(!users_with_multiple_posts.is_empty());
 
+    drop(conn);
     Ok(())
 }

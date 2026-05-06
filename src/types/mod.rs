@@ -28,8 +28,8 @@ impl FromSql<sql_types::Bool, TursoBackend> for bool {
 
 impl ToSql<sql_types::Bool, TursoBackend> for bool {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        let int_value = if *self { &1 } else { &0 };
-        <i32 as ToSql<sql_types::Integer, TursoBackend>>::to_sql(int_value, out)
+        out.set_value(i64::from(*self));
+        Ok(IsNull::No)
     }
 }
 
@@ -43,13 +43,13 @@ impl HasSqlType<sql_types::SmallInt> for TursoBackend {
 
 impl FromSql<sql_types::SmallInt, TursoBackend> for i16 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number() as i16)
+        Self::try_from(value.read_int()).map_err(Into::into)
     }
 }
 
 impl ToSql<sql_types::SmallInt, TursoBackend> for i16 {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self as i32);
+        out.set_value(i32::from(*self));
         Ok(IsNull::No)
     }
 }
@@ -66,13 +66,13 @@ impl HasSqlType<sql_types::Integer> for TursoBackend {
 
 impl FromSql<sql_types::Integer, TursoBackend> for i32 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number() as i32)
+        Self::try_from(value.read_int()).map_err(Into::into)
     }
 }
 
 impl ToSql<sql_types::Integer, TursoBackend> for i32 {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self as i64);
+        out.set_value(i64::from(*self));
         Ok(IsNull::No)
     }
 }
@@ -89,7 +89,7 @@ impl HasSqlType<sql_types::BigInt> for TursoBackend {
 
 impl FromSql<sql_types::BigInt, TursoBackend> for i64 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number() as i64)
+        Ok(value.read_int())
     }
 }
 
@@ -111,14 +111,15 @@ impl HasSqlType<sql_types::Float> for TursoBackend {
 }
 
 impl FromSql<sql_types::Float, TursoBackend> for f32 {
+    #[allow(clippy::cast_possible_truncation)]
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number() as f32)
+        Ok(value.read_number() as Self)
     }
 }
 
 impl ToSql<sql_types::Float, TursoBackend> for f32 {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, TursoBackend>) -> serialize::Result {
-        out.set_value(*self as f64);
+        out.set_value(f64::from(*self));
         Ok(IsNull::No)
     }
 }

@@ -16,7 +16,7 @@ pub struct Yes;
 
 impl Default for Yes {
     fn default() -> Self {
-        Yes
+        Self
     }
 }
 
@@ -25,7 +25,7 @@ pub struct No;
 
 impl Default for No {
     fn default() -> Self {
-        No
+        Self
     }
 }
 
@@ -33,8 +33,8 @@ pub trait Any<Rhs> {
     type Out: Any<Yes> + Any<No>;
 }
 
-impl Any<No> for No {
-    type Out = No;
+impl Any<Self> for No {
+    type Out = Self;
 }
 
 impl Any<Yes> for No {
@@ -42,11 +42,11 @@ impl Any<Yes> for No {
 }
 
 impl Any<No> for Yes {
-    type Out = Yes;
+    type Out = Self;
 }
 
-impl Any<Yes> for Yes {
-    type Out = Yes;
+impl Any<Self> for Yes {
+    type Out = Self;
 }
 
 // TODO: do we need it?
@@ -70,7 +70,7 @@ where
     type Out = I::Out;
 }
 
-impl<I, T> ContainsDefaultableValue for ValuesClause<I, T>
+impl<I, Tab> ContainsDefaultableValue for ValuesClause<I, Tab>
 where
     I: ContainsDefaultableValue,
 {
@@ -136,16 +136,18 @@ where
     fn fmt_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = unsafe {
             // This cast is safe as `TursoBatchInsertWrapper` is #[repr(transparent)]
-            &*(self as *const DebugQuery<
-                'a,
-                InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
-                TursoBackend,
-            >
-                as *const DebugQuery<
+            &*std::ptr::from_ref::<
+                DebugQuery<
                     'a,
-                    InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
+                    InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
                     TursoBackend,
-                >)
+                >,
+            >(self)
+            .cast::<DebugQuery<
+                'a,
+                InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
+                TursoBackend,
+            >>()
         };
         <_ as Debug>::fmt(value, f)
     }
@@ -153,16 +155,18 @@ where
     fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = unsafe {
             // This cast is safe as `TursoBatchInsertWrapper` is #[repr(transparent)]
-            &*(self as *const DebugQuery<
-                'a,
-                InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
-                TursoBackend,
-            >
-                as *const DebugQuery<
+            &*std::ptr::from_ref::<
+                DebugQuery<
                     'a,
-                    InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
+                    InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
                     TursoBackend,
-                >)
+                >,
+            >(self)
+            .cast::<DebugQuery<
+                'a,
+                InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
+                TursoBackend,
+            >>()
         };
         <_ as Display>::fmt(value, f)
     }

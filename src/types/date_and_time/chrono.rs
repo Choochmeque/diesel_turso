@@ -127,7 +127,6 @@ impl ToSql<sql_types::Timestamp, TursoBackend> for NaiveDateTime {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     extern crate chrono;
 
@@ -149,22 +148,22 @@ mod tests {
 
     #[tokio::test]
     async fn unix_epoch_encodes_correctly() {
-        let connection = &mut connection().await;
+        let mut connection = connection().await;
         let time = NaiveDate::from_ymd_opt(1970, 1, 1)
-            .unwrap()
+            .expect("1970-01-01 is a valid date")
             .and_hms_opt(0, 0, 0)
-            .unwrap();
+            .expect("00:00:00 is a valid time");
         let query = select(datetime("1970-01-01 00:00:00.000000").eq(time));
-        assert_eq!(Ok(true), query.get_result(connection).await);
+        assert_eq!(Ok(true), query.get_result(&mut connection).await);
     }
 
     #[tokio::test]
     async fn unix_epoch_decodes_correctly_in_all_possible_formats() {
-        let connection = &mut connection().await;
+        let mut connection = connection().await;
         let time = NaiveDate::from_ymd_opt(1970, 1, 1)
-            .unwrap()
+            .expect("1970-01-01 is a valid date")
             .and_hms_opt(0, 0, 0)
-            .unwrap();
+            .expect("00:00:00 is a valid time");
         let valid_epoch_formats = vec![
             "1970-01-01 00:00",
             "1970-01-01 00:00:00",
@@ -211,7 +210,7 @@ mod tests {
 
         for s in valid_epoch_formats {
             let epoch_from_sql = select(sql::<Timestamp>(&format!("'{s}'")))
-                .get_result(connection)
+                .get_result(&mut connection)
                 .await;
             assert_eq!(Ok(time), epoch_from_sql, "format {s} failed");
         }
@@ -219,37 +218,49 @@ mod tests {
 
     #[tokio::test]
     async fn times_relative_to_now_encode_correctly() {
-        let connection = &mut connection().await;
-        let time = Utc::now().naive_utc() + Duration::try_seconds(60).unwrap();
+        let mut connection = connection().await;
+        let time = Utc::now().naive_utc()
+            + Duration::try_seconds(60).expect("60 seconds fits in Duration");
         let query = select(now.lt(time));
-        assert_eq!(Ok(true), query.get_result(connection).await);
+        assert_eq!(Ok(true), query.get_result(&mut connection).await);
 
-        let time = Utc::now().naive_utc() - Duration::try_seconds(600).unwrap();
+        let time = Utc::now().naive_utc()
+            - Duration::try_seconds(600).expect("600 seconds fits in Duration");
         let query = select(now.gt(time));
-        assert_eq!(Ok(true), query.get_result(connection).await);
+        assert_eq!(Ok(true), query.get_result(&mut connection).await);
     }
 
     #[tokio::test]
     async fn times_of_day_encode_correctly() {
-        let connection = &mut connection().await;
+        let mut connection = connection().await;
 
-        let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let midnight = NaiveTime::from_hms_opt(0, 0, 0).expect("00:00:00 is a valid time");
         let query = select(time("00:00:00.000000").eq(midnight));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("midnight equality query should run"));
 
-        let noon = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let noon = NaiveTime::from_hms_opt(12, 0, 0).expect("12:00:00 is a valid time");
         let query = select(time("12:00:00.000000").eq(noon));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("noon equality query should run"));
 
-        let roughly_half_past_eleven = NaiveTime::from_hms_micro_opt(23, 37, 4, 2200).unwrap();
+        let roughly_half_past_eleven = NaiveTime::from_hms_micro_opt(23, 37, 4, 2200)
+            .expect("23:37:04.002200 is a valid time");
         let query = select(sql::<Time>("'23:37:04.002200'").eq(roughly_half_past_eleven));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("23:37:04.002200 equality query should run"));
     }
 
     #[tokio::test]
     async fn times_of_day_decode_correctly() {
-        let connection = &mut connection().await;
-        let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let mut connection = connection().await;
+        let midnight = NaiveTime::from_hms_opt(0, 0, 0).expect("00:00:00 is a valid time");
         let valid_midnight_formats = &[
             "00:00",
             "00:00:00",
@@ -276,149 +287,184 @@ mod tests {
             let query = select(sql::<Time>(&format!("'{format}'")));
             assert_eq!(
                 Ok(midnight),
-                query.get_result::<NaiveTime>(connection).await,
+                query.get_result::<NaiveTime>(&mut connection).await,
                 "format {format} failed"
             );
         }
 
-        let noon = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let noon = NaiveTime::from_hms_opt(12, 0, 0).expect("12:00:00 is a valid time");
         let query = select(sql::<Time>("'12:00:00'"));
-        assert_eq!(Ok(noon), query.get_result::<NaiveTime>(connection).await);
+        assert_eq!(
+            Ok(noon),
+            query.get_result::<NaiveTime>(&mut connection).await
+        );
 
-        let roughly_half_past_eleven = NaiveTime::from_hms_micro_opt(23, 37, 4, 2200).unwrap();
+        let roughly_half_past_eleven = NaiveTime::from_hms_micro_opt(23, 37, 4, 2200)
+            .expect("23:37:04.002200 is a valid time");
         let query = select(sql::<Time>("'23:37:04.002200'"));
         assert_eq!(
             Ok(roughly_half_past_eleven),
-            query.get_result::<NaiveTime>(connection).await
+            query.get_result::<NaiveTime>(&mut connection).await
         );
     }
 
     #[tokio::test]
     async fn dates_encode_correctly() {
-        let connection = &mut connection().await;
-        let january_first_2000 = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+        let mut connection = connection().await;
+        let january_first_2000 =
+            NaiveDate::from_ymd_opt(2000, 1, 1).expect("2000-01-01 is a valid date");
         let query = select(date("2000-01-01").eq(january_first_2000));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("2000-01-01 equality query should run"));
 
-        let distant_past = NaiveDate::from_ymd_opt(0, 4, 11).unwrap();
+        let distant_past = NaiveDate::from_ymd_opt(0, 4, 11).expect("0000-04-11 is a valid date");
         let query = select(date("0000-04-11").eq(distant_past));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("0000-04-11 equality query should run"));
 
-        let january_first_2018 = NaiveDate::from_ymd_opt(2018, 1, 1).unwrap();
+        let january_first_2018 =
+            NaiveDate::from_ymd_opt(2018, 1, 1).expect("2018-01-01 is a valid date");
         let query = select(date("2018-01-01").eq(january_first_2018));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("2018-01-01 equality query should run"));
 
-        let distant_future = NaiveDate::from_ymd_opt(9999, 1, 8).unwrap();
+        let distant_future =
+            NaiveDate::from_ymd_opt(9999, 1, 8).expect("9999-01-08 is a valid date");
         let query = select(date("9999-01-08").eq(distant_future));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("9999-01-08 equality query should run"));
     }
 
     #[tokio::test]
     async fn dates_decode_correctly() {
-        let connection = &mut connection().await;
-        let january_first_2000 = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+        let mut connection = connection().await;
+        let january_first_2000 =
+            NaiveDate::from_ymd_opt(2000, 1, 1).expect("2000-01-01 is a valid date");
         let query = select(date("2000-01-01"));
         assert_eq!(
             Ok(january_first_2000),
-            query.get_result::<NaiveDate>(connection).await
+            query.get_result::<NaiveDate>(&mut connection).await
         );
 
-        let distant_past = NaiveDate::from_ymd_opt(0, 4, 11).unwrap();
+        let distant_past = NaiveDate::from_ymd_opt(0, 4, 11).expect("0000-04-11 is a valid date");
         let query = select(date("0000-04-11"));
         assert_eq!(
             Ok(distant_past),
-            query.get_result::<NaiveDate>(connection).await
+            query.get_result::<NaiveDate>(&mut connection).await
         );
 
-        let january_first_2018 = NaiveDate::from_ymd_opt(2018, 1, 1).unwrap();
+        let january_first_2018 =
+            NaiveDate::from_ymd_opt(2018, 1, 1).expect("2018-01-01 is a valid date");
         let query = select(date("2018-01-01"));
         assert_eq!(
             Ok(january_first_2018),
-            query.get_result::<NaiveDate>(connection).await
+            query.get_result::<NaiveDate>(&mut connection).await
         );
 
-        let distant_future = NaiveDate::from_ymd_opt(9999, 1, 8).unwrap();
+        let distant_future =
+            NaiveDate::from_ymd_opt(9999, 1, 8).expect("9999-01-08 is a valid date");
         let query = select(date("9999-01-08"));
         assert_eq!(
             Ok(distant_future),
-            query.get_result::<NaiveDate>(connection).await
+            query.get_result::<NaiveDate>(&mut connection).await
         );
     }
 
     #[tokio::test]
     async fn datetimes_decode_correctly() {
-        let connection = &mut connection().await;
+        let mut connection = connection().await;
         let january_first_2000 = NaiveDate::from_ymd_opt(2000, 1, 1)
-            .unwrap()
+            .expect("2000-01-01 is a valid date")
             .and_hms_opt(1, 1, 1)
-            .unwrap();
+            .expect("01:01:01 is a valid time");
         let query = select(datetime("2000-01-01 01:01:01.000000"));
         assert_eq!(
             Ok(january_first_2000),
-            query.get_result::<NaiveDateTime>(connection).await
+            query.get_result::<NaiveDateTime>(&mut connection).await
         );
 
         let distant_past = NaiveDate::from_ymd_opt(0, 4, 11)
-            .unwrap()
+            .expect("0000-04-11 is a valid date")
             .and_hms_opt(2, 2, 2)
-            .unwrap();
+            .expect("02:02:02 is a valid time");
         let query = select(datetime("0000-04-11 02:02:02.000000"));
         assert_eq!(
             Ok(distant_past),
-            query.get_result::<NaiveDateTime>(connection).await
+            query.get_result::<NaiveDateTime>(&mut connection).await
         );
 
-        let january_first_2018 = NaiveDate::from_ymd_opt(2018, 1, 1).unwrap();
+        let january_first_2018 =
+            NaiveDate::from_ymd_opt(2018, 1, 1).expect("2018-01-01 is a valid date");
         let query = select(date("2018-01-01"));
         assert_eq!(
             Ok(january_first_2018),
-            query.get_result::<NaiveDate>(connection).await
+            query.get_result::<NaiveDate>(&mut connection).await
         );
 
         let distant_future = NaiveDate::from_ymd_opt(9999, 1, 8)
-            .unwrap()
+            .expect("9999-01-08 is a valid date")
             .and_hms_opt(23, 59, 59)
-            .unwrap()
+            .expect("23:59:59 is a valid time")
             .with_nanosecond(100_000)
-            .unwrap();
+            .expect("100_000 ns < 2_000_000_000 (leap second cap)");
         let query = select(sql::<Timestamp>("'9999-01-08 23:59:59.000100'"));
         assert_eq!(
             Ok(distant_future),
-            query.get_result::<NaiveDateTime>(connection).await
+            query.get_result::<NaiveDateTime>(&mut connection).await
         );
     }
 
     #[tokio::test]
     async fn datetimes_encode_correctly() {
-        let connection = &mut connection().await;
+        let mut connection = connection().await;
         let january_first_2000 = NaiveDate::from_ymd_opt(2000, 1, 1)
-            .unwrap()
+            .expect("2000-01-01 is a valid date")
             .and_hms_opt(0, 0, 0)
-            .unwrap();
+            .expect("00:00:00 is a valid time");
         let query = select(datetime("2000-01-01 00:00:00.000000").eq(january_first_2000));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("2000-01-01 00:00:00 equality query should run"));
 
         let distant_past = NaiveDate::from_ymd_opt(0, 4, 11)
-            .unwrap()
-            .and_hms_opt(20, 00, 20)
-            .unwrap();
+            .expect("0000-04-11 is a valid date")
+            .and_hms_opt(20, 0, 20)
+            .expect("20:00:20 is a valid time");
         let query = select(datetime("0000-04-11 20:00:20.000000").eq(distant_past));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("0000-04-11 20:00:20 equality query should run"));
 
         let january_first_2018 = NaiveDate::from_ymd_opt(2018, 1, 1)
-            .unwrap()
-            .and_hms_opt(12, 00, 00)
-            .unwrap()
+            .expect("2018-01-01 is a valid date")
+            .and_hms_opt(12, 0, 0)
+            .expect("12:00:00 is a valid time")
             .with_nanosecond(500_000)
-            .unwrap();
+            .expect("500_000 ns < 2_000_000_000 (leap second cap)");
         let query = select(sql::<Timestamp>("'2018-01-01 12:00:00.000500'").eq(january_first_2018));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("2018-01-01 12:00:00.000500 equality query should run"));
 
         let distant_future = NaiveDate::from_ymd_opt(9999, 1, 8)
-            .unwrap()
+            .expect("9999-01-08 is a valid date")
             .and_hms_opt(0, 0, 0)
-            .unwrap();
+            .expect("00:00:00 is a valid time");
         let query = select(datetime("9999-01-08 00:00:00.000000").eq(distant_future));
-        assert!(query.get_result::<bool>(connection).await.unwrap());
+        assert!(query
+            .get_result::<bool>(&mut connection)
+            .await
+            .expect("9999-01-08 00:00:00 equality query should run"));
     }
 }

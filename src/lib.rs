@@ -41,7 +41,7 @@ pub struct AsyncTursoConnection {
 impl AsyncTursoConnection {
     pub async fn new(path: &str) -> Result<Self, turso::Error> {
         let binding = TursoDatabase::new(path).await?;
-        Ok(AsyncTursoConnection {
+        Ok(Self {
             transaction_manager: AnsiTransactionManager::default(),
             binding,
             connection: None,
@@ -49,41 +49,47 @@ impl AsyncTursoConnection {
         })
     }
 
-    pub(crate) async fn ensure_connection(&mut self) -> Result<(), diesel::result::Error> {
+    pub(crate) async fn ensure_connection(
+        &mut self,
+    ) -> Result<&TursoConnection, diesel::result::Error> {
         if self.connection.is_none() {
-            self.connection = Some(self.binding.connect().await.map_err(|e| {
+            let conn = self.binding.connect().await.map_err(|e| {
                 diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::UnableToSendCommand,
                     Box::new(TursoError {
                         message: e.to_string(),
                     }),
                 )
-            })?);
+            })?;
+            self.connection = Some(conn);
         }
-        Ok(())
+        let Some(conn) = self.connection.as_ref() else {
+            unreachable!("self.connection populated above")
+        };
+        Ok(conn)
     }
 }
 
 impl SimpleAsyncConnection for AsyncTursoConnection {
     async fn batch_execute(&mut self, query: &str) -> diesel::QueryResult<()> {
-        self.ensure_connection().await?;
-
         self.instrumentation()
             .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
                 query,
             )));
 
-        let conn = self.connection.as_ref().unwrap();
-        let stmt = conn.prepare(query);
-
-        let result = conn.execute_batch(&stmt).await.map_err(|e| {
-            diesel::result::Error::DatabaseError(
-                diesel::result::DatabaseErrorKind::UnableToSendCommand,
-                Box::new(TursoError {
-                    message: e.to_string(),
-                }),
-            )
-        });
+        let result = async {
+            let conn = self.ensure_connection().await?;
+            let stmt = conn.prepare(query);
+            conn.execute_batch(&stmt).await.map_err(|e| {
+                diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UnableToSendCommand,
+                    Box::new(TursoError {
+                        message: e.to_string(),
+                    }),
+                )
+            })
+        }
+        .await;
 
         self.instrumentation()
             .on_connection_event(InstrumentationEvent::finish_query(
@@ -106,15 +112,17 @@ impl AsyncConnectionCore for AsyncTursoConnection {
         T: AsQuery + 'query,
         T::Query: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        let source = source.as_query();
-        let mut query_builder = TursoQueryBuilder::default();
-        source.to_sql(&mut query_builder, &TursoBackend).unwrap();
-        let sql = query_builder.sql.clone();
-        let binds = construct_bind_data(&source).unwrap();
+        let prep = (|| -> QueryResult<(String, Vec<turso::Value>)> {
+            let source = source.as_query();
+            let mut query_builder = TursoQueryBuilder::default();
+            source.to_sql(&mut query_builder, &TursoBackend)?;
+            let binds = construct_bind_data(&source)?;
+            Ok((query_builder.sql, binds))
+        })();
 
         async move {
-            self.ensure_connection().await?;
-            let conn = self.connection.as_ref().unwrap();
+            let (sql, binds) = prep?;
+            let conn = self.ensure_connection().await?;
 
             let mut stmt = conn.prepare(&sql);
             stmt.bind(binds);
@@ -154,14 +162,16 @@ impl AsyncConnectionCore for AsyncTursoConnection {
     where
         T: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        let mut query_builder = TursoQueryBuilder::default();
-        source.to_sql(&mut query_builder, &TursoBackend).unwrap();
-        let sql = query_builder.sql.clone();
-        let binds = construct_bind_data(&source).unwrap();
+        let prep = (|| -> QueryResult<(String, Vec<turso::Value>)> {
+            let mut query_builder = TursoQueryBuilder::default();
+            source.to_sql(&mut query_builder, &TursoBackend)?;
+            let binds = construct_bind_data(&source)?;
+            Ok((query_builder.sql, binds))
+        })();
 
         async move {
-            self.ensure_connection().await?;
-            let conn = self.connection.as_ref().unwrap();
+            let (sql, binds) = prep?;
+            let conn = self.ensure_connection().await?;
 
             let mut stmt = conn.prepare(&sql);
             stmt.bind(binds);
@@ -192,7 +202,7 @@ impl AsyncConnection for AsyncTursoConnection {
     type TransactionManager = AnsiTransactionManager;
 
     async fn establish(path: &str) -> ConnectionResult<Self> {
-        AsyncTursoConnection::new(path)
+        Self::new(path)
             .await
             .map_err(|e| diesel::result::ConnectionError::BadConnection(e.to_string()))
     }

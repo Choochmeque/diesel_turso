@@ -1,4 +1,4 @@
-//! The SQLite query builder
+//! The `SQLite` query builder
 
 use super::backend::TursoBackend;
 use diesel::query_builder::QueryBuilder;
@@ -7,7 +7,7 @@ use diesel::result::QueryResult;
 mod limit_offset;
 mod returning;
 
-/// Constructs SQL queries for use with the SQLite backend
+/// Constructs SQL queries for use with the `SQLite` backend
 #[allow(missing_debug_implementations)]
 #[derive(Default)]
 pub struct TursoQueryBuilder {
@@ -17,7 +17,7 @@ pub struct TursoQueryBuilder {
 impl TursoQueryBuilder {
     /// Construct a new query builder with an empty query
     pub fn new() -> Self {
-        TursoQueryBuilder::default()
+        Self::default()
     }
 }
 

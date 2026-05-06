@@ -10,14 +10,14 @@ use crate::{
     bind_collector::TursoBindCollector, query_builder::TursoQueryBuilder, value::TursoValue,
 };
 
-/// The SQLite backend
+/// The `SQLite` backend
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, Default)]
 pub struct TursoBackend;
 
-/// Determines how a bind parameter is given to SQLite
+/// Determines how a bind parameter is given to `SQLite`
 ///
 /// Diesel deals with bind parameters after serialization as opaque blobs of
-/// bytes. However, SQLite instead has several functions where it expects the
+/// bytes. However, `SQLite` instead has several functions where it expects the
 /// relevant C types.
 ///
 /// The variants of this struct determine what bytes are expected from

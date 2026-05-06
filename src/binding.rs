@@ -28,9 +28,10 @@ pub struct TursoResult {
 impl TursoDatabase {
     pub async fn new(path: &str) -> Result<Self, turso::Error> {
         let db = Builder::new_local(path).build().await?;
-        Ok(TursoDatabase { db })
+        Ok(Self { db })
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn connect(&self) -> Result<TursoConnection, turso::Error> {
         let conn = Arc::new(self.db.connect()?);
         Ok(TursoConnection { conn })
@@ -38,6 +39,7 @@ impl TursoDatabase {
 }
 
 impl TursoConnection {
+    #[allow(clippy::unused_self)]
     pub fn prepare(&self, query: &str) -> TursoPreparedStatement {
         TursoPreparedStatement {
             sql: query.to_string(),
@@ -66,7 +68,11 @@ impl TursoConnection {
             column_names: Arc::from([]),
             rows: Vec::new(),
             error: None,
-            changes: rows_affected as usize,
+            changes: usize::try_from(rows_affected).map_err(|_| {
+                turso::Error::ConversionFailure(format!(
+                    "rows_affected ({rows_affected}) exceeds usize::MAX"
+                ))
+            })?,
         })
     }
 

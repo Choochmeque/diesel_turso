@@ -17,7 +17,6 @@ where
         + Send
         + PartialEq
         + Debug
-        + Clone
         + 'static,
     T::Expression: ValidGrouping<()>
         + SelectableExpression<NoFromClause>
@@ -36,110 +35,125 @@ where
 
 #[tokio::test]
 async fn check_small_int() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::SmallInt>(conn, 1_i16).await;
-    type_check::<_, sql_types::SmallInt>(conn, 1_i16).await;
-    type_check::<_, sql_types::SmallInt>(conn, i16::MIN).await;
-    type_check::<_, sql_types::SmallInt>(conn, i16::MAX).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::SmallInt>(&mut conn, 1_i16).await;
+    type_check::<_, sql_types::SmallInt>(&mut conn, 1_i16).await;
+    type_check::<_, sql_types::SmallInt>(&mut conn, i16::MIN).await;
+    type_check::<_, sql_types::SmallInt>(&mut conn, i16::MAX).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_int() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Integer>(conn, 1_i32).await;
-    type_check::<_, sql_types::Integer>(conn, -1_i32).await;
-    type_check::<_, sql_types::Integer>(conn, i32::MIN).await;
-    type_check::<_, sql_types::Integer>(conn, i32::MAX).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Integer>(&mut conn, 1_i32).await;
+    type_check::<_, sql_types::Integer>(&mut conn, -1_i32).await;
+    type_check::<_, sql_types::Integer>(&mut conn, i32::MIN).await;
+    type_check::<_, sql_types::Integer>(&mut conn, i32::MAX).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_big_int() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::BigInt>(conn, 1_i64).await;
-    type_check::<_, sql_types::BigInt>(conn, -1_i64).await;
-    type_check::<_, sql_types::BigInt>(conn, i64::MIN).await;
-    type_check::<_, sql_types::BigInt>(conn, i64::MAX).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::BigInt>(&mut conn, 1_i64).await;
+    type_check::<_, sql_types::BigInt>(&mut conn, -1_i64).await;
+    type_check::<_, sql_types::BigInt>(&mut conn, i64::MIN).await;
+    type_check::<_, sql_types::BigInt>(&mut conn, i64::MAX).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_bool() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Bool>(conn, false).await;
-    type_check::<_, sql_types::Bool>(conn, false).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Bool>(&mut conn, false).await;
+    type_check::<_, sql_types::Bool>(&mut conn, false).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_f32() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Float4>(conn, 1.0_f32).await;
-    type_check::<_, sql_types::Float4>(conn, f32::MIN_POSITIVE).await;
-    type_check::<_, sql_types::Float4>(conn, f32::MIN).await;
-    type_check::<_, sql_types::Float4>(conn, f32::MAX).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Float4>(&mut conn, 1.0_f32).await;
+    type_check::<_, sql_types::Float4>(&mut conn, f32::MIN_POSITIVE).await;
+    type_check::<_, sql_types::Float4>(&mut conn, f32::MIN).await;
+    type_check::<_, sql_types::Float4>(&mut conn, f32::MAX).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_f64() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Float8>(conn, 1.0_f64).await;
-    type_check::<_, sql_types::Float8>(conn, f64::MIN_POSITIVE).await;
-    type_check::<_, sql_types::Float8>(conn, f64::MIN).await;
-    type_check::<_, sql_types::Float8>(conn, f64::MAX).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Float8>(&mut conn, 1.0_f64).await;
+    type_check::<_, sql_types::Float8>(&mut conn, f64::MIN_POSITIVE).await;
+    type_check::<_, sql_types::Float8>(&mut conn, f64::MIN).await;
+    type_check::<_, sql_types::Float8>(&mut conn, f64::MAX).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_string() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Text>(conn, String::from("Test")).await;
-    type_check::<_, sql_types::Text>(conn, String::new()).await;
-    type_check::<_, sql_types::Text>(conn, String::from("üöä")).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Text>(&mut conn, String::from("Test")).await;
+    type_check::<_, sql_types::Text>(&mut conn, String::new()).await;
+    type_check::<_, sql_types::Text>(&mut conn, String::from("üöä")).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn check_option() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Nullable<sql_types::Integer>>(conn, Some(42)).await;
-    type_check::<_, sql_types::Nullable<sql_types::Integer>>(conn, None::<i32>).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Nullable<sql_types::Integer>>(&mut conn, Some(42)).await;
+    type_check::<_, sql_types::Nullable<sql_types::Integer>>(&mut conn, None::<i32>).await;
 
-    type_check::<_, sql_types::Nullable<sql_types::Text>>(conn, Some(String::new())).await;
-    type_check::<_, sql_types::Nullable<sql_types::Text>>(conn, None::<String>).await;
+    type_check::<_, sql_types::Nullable<sql_types::Text>>(&mut conn, Some(String::new())).await;
+    type_check::<_, sql_types::Nullable<sql_types::Text>>(&mut conn, None::<String>).await;
+    drop(conn);
 }
 
 #[tokio::test]
 async fn test_blob() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Blob>(conn, b"foo".to_vec()).await;
-    type_check::<_, sql_types::Blob>(conn, Vec::new()).await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Blob>(&mut conn, b"foo".to_vec()).await;
+    type_check::<_, sql_types::Blob>(&mut conn, Vec::new()).await;
+    drop(conn);
 }
 
 #[cfg(feature = "chrono")]
 #[tokio::test]
 async fn test_timestamp() {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
     type_check::<_, sql_types::Timestamp>(
-        conn,
+        &mut conn,
         chrono::NaiveDateTime::new(
-            chrono::NaiveDate::from_ymd_opt(2021, 9, 27).unwrap(),
-            chrono::NaiveTime::from_hms_milli_opt(17, 44, 23, 0).unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2021, 9, 27).expect("valid date 2021-09-27"),
+            chrono::NaiveTime::from_hms_milli_opt(17, 44, 23, 0).expect("valid time 17:44:23"),
         ),
     )
     .await;
+    drop(conn);
 }
 
 #[cfg(feature = "chrono")]
 #[tokio::test]
 async fn test_date() {
-    let conn = &mut connection().await;
-    type_check::<_, sql_types::Date>(conn, chrono::NaiveDate::from_ymd_opt(2021, 9, 27).unwrap())
-        .await;
+    let mut conn = connection().await;
+    type_check::<_, sql_types::Date>(
+        &mut conn,
+        chrono::NaiveDate::from_ymd_opt(2021, 9, 27).expect("valid date 2021-09-27"),
+    )
+    .await;
+    drop(conn);
 }
 
 #[cfg(feature = "chrono")]
 #[tokio::test]
 async fn test_time() {
-    let conn = &mut connection().await;
+    let mut conn = connection().await;
     type_check::<_, sql_types::Time>(
-        conn,
-        chrono::NaiveTime::from_hms_milli_opt(17, 44, 23, 0).unwrap(),
+        &mut conn,
+        chrono::NaiveTime::from_hms_milli_opt(17, 44, 23, 0).expect("valid time 17:44:23"),
     )
     .await;
+    drop(conn);
 }

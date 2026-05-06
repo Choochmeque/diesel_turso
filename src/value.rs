@@ -7,7 +7,7 @@ pub struct TursoValue {
 
 impl From<bool> for TursoValue {
     fn from(value: bool) -> Self {
-        Self::from_turso_value(Value::Integer(if value { 1 } else { 0 }))
+        Self::from_turso_value(Value::Integer(i64::from(value)))
     }
 }
 
@@ -31,19 +31,19 @@ impl From<String> for TursoValue {
 
 impl From<i16> for TursoValue {
     fn from(value: i16) -> Self {
-        Self::from_turso_value(Value::Integer(value as i64))
+        Self::from_turso_value(Value::Integer(i64::from(value)))
     }
 }
 
 impl From<i32> for TursoValue {
     fn from(value: i32) -> Self {
-        Self::from_turso_value(Value::Integer(value as i64))
+        Self::from_turso_value(Value::Integer(i64::from(value)))
     }
 }
 
 impl From<f32> for TursoValue {
     fn from(value: f32) -> Self {
-        Self::from_turso_value(Value::Real(value as f64))
+        Self::from_turso_value(Value::Real(f64::from(value)))
     }
 }
 
@@ -66,7 +66,7 @@ impl From<&[u8]> for TursoValue {
 }
 
 impl TursoValue {
-    pub fn from_turso_value(value: Value) -> Self {
+    pub const fn from_turso_value(value: Value) -> Self {
         Self { value }
     }
 
@@ -88,10 +88,18 @@ impl TursoValue {
         }
     }
 
-    /// Returns float value
+    pub(crate) fn read_int(&self) -> i64 {
+        match &self.value {
+            Value::Integer(i) => *i,
+            _ => panic!("Value is not an integer, but {:?}", self.value),
+        }
+    }
+
+    /// Returns float value. Integer values are widened to `f64` (lossy beyond 2^53).
     pub(crate) fn read_number(&self) -> f64 {
         match &self.value {
             Value::Real(f) => *f,
+            #[allow(clippy::cast_precision_loss)]
             Value::Integer(i) => *i as f64,
             _ => panic!("Value is not a number, but {:?}", self.value),
         }
@@ -112,7 +120,7 @@ impl TursoValue {
         }
     }
 
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         matches!(self.value, Value::Null)
     }
 }

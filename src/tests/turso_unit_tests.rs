@@ -10,7 +10,7 @@ async fn setup(connection: &Connection) {
             Vec::<Value>::new(),
         )
         .await
-        .unwrap();
+        .expect("create users table");
 
     connection
         .execute(
@@ -26,7 +26,7 @@ async fn setup(connection: &Connection) {
             Vec::<Value>::new(),
         )
         .await
-        .unwrap();
+        .expect("create posts table");
 
     connection
         .execute(
@@ -42,7 +42,7 @@ async fn setup(connection: &Connection) {
             Vec::<Value>::new(),
         )
         .await
-        .unwrap();
+        .expect("create comments table");
 
     connection
         .execute(
@@ -54,7 +54,7 @@ async fn setup(connection: &Connection) {
             Vec::<Value>::new(),
         )
         .await
-        .unwrap();
+        .expect("create categories table");
 
     connection
         .execute(
@@ -68,7 +68,7 @@ async fn setup(connection: &Connection) {
             Vec::<Value>::new(),
         )
         .await
-        .unwrap();
+        .expect("create post_categories table");
 }
 
 async fn connection() -> Connection {
@@ -78,9 +78,12 @@ async fn connection() -> Connection {
 }
 
 async fn connection_without_transaction() -> Connection {
-    let db_url = std::env::var("DATABASE_URL").unwrap();
-    let db = Builder::new_local(&db_url).build().await.unwrap();
-    db.connect().unwrap()
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db = Builder::new_local(&db_url)
+        .build()
+        .await
+        .expect("build turso database");
+    db.connect().expect("open turso connection")
 }
 
 #[tokio::test]
@@ -170,19 +173,19 @@ async fn test_filtering_and_where_clauses() -> Result<(), turso::Error> {
     for i in 1..=10 {
         conn.execute(
             "INSERT INTO users (name) VALUES (?)",
-            vec![Value::Text(format!("User{}", i))],
+            vec![Value::Text(format!("User{i}"))],
         )
         .await?;
     }
 
     for i in 1..=5 {
-        let published = if i % 2 == 0 { 1 } else { 0 };
+        let published = i64::from(i % 2 == 0);
         conn.execute(
             "INSERT INTO posts (title, body, published, user_id, created_at) 
              VALUES (?, ?, ?, ?, datetime('now'))",
             vec![
-                Value::Text(format!("Post {}", i)),
-                Value::Text(format!("Content {}", i)),
+                Value::Text(format!("Post {i}")),
+                Value::Text(format!("Content {i}")),
                 Value::Integer(published),
                 Value::Integer(i),
             ],
@@ -273,7 +276,7 @@ async fn test_delete_operations() -> Result<(), turso::Error> {
     for i in 1..=5 {
         conn.execute(
             "INSERT INTO users (name) VALUES (?)",
-            vec![Value::Text(format!("DeleteUser{}", i))],
+            vec![Value::Text(format!("DeleteUser{i}"))],
         )
         .await?;
     }
@@ -364,7 +367,7 @@ async fn test_aggregate_functions() -> Result<(), turso::Error> {
     for i in 1..=10 {
         conn.execute(
             "INSERT INTO users (name) VALUES (?)",
-            vec![Value::Text(format!("User{:02}", i))],
+            vec![Value::Text(format!("User{i:02}"))],
         )
         .await?;
     }
@@ -375,8 +378,8 @@ async fn test_aggregate_functions() -> Result<(), turso::Error> {
                 "INSERT INTO posts (title, body, published, user_id, created_at) 
                  VALUES (?, ?, ?, ?, datetime('now'))",
                 vec![
-                    Value::Text(format!("Post {}-{}", i, j)),
-                    Value::Text(format!("Content for post {}-{}", i, j)),
+                    Value::Text(format!("Post {i}-{j}")),
+                    Value::Text(format!("Content for post {i}-{j}")),
                     Value::Integer(1),
                     Value::Integer(i),
                 ],
@@ -459,8 +462,8 @@ async fn test_join_operations() -> Result<(), turso::Error> {
                 "INSERT INTO posts (title, body, published, user_id, created_at) 
                  VALUES (?, ?, ?, ?, datetime('now'))",
                 vec![
-                    Value::Text(format!("Post by Author{}", i)),
-                    Value::Text(format!("Content {}", j)),
+                    Value::Text(format!("Post by Author{i}")),
+                    Value::Text(format!("Content {j}")),
                     Value::Integer(1),
                     Value::Integer(i),
                 ],
@@ -522,7 +525,7 @@ async fn test_nullable_fields() -> Result<(), turso::Error> {
             Value::Text("NoDesc".to_string()),
             Value::Null,
             Value::Text("EmptyDesc".to_string()),
-            Value::Text("".to_string()),
+            Value::Text(String::new()),
         ],
     )
     .await?;
@@ -537,7 +540,7 @@ async fn test_nullable_fields() -> Result<(), turso::Error> {
                 Value::Text("NoDesc".to_string()),
                 Value::Null,
                 Value::Text("EmptyDesc".to_string()),
-                Value::Text("".to_string()),
+                Value::Text(String::new()),
             ],
         )
         .await?;
@@ -638,7 +641,7 @@ async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
                 "INSERT INTO posts (title, body, published, user_id, created_at) 
                  VALUES (?, ?, ?, ?, datetime('now'))",
                 vec![
-                    Value::Text(format!("Post {}", j)),
+                    Value::Text(format!("Post {j}")),
                     Value::Text("Content".to_string()),
                     Value::Integer(1),
                     Value::Integer(i),

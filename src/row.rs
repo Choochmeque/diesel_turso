@@ -11,7 +11,7 @@ pub struct TursoRow {
 }
 
 impl TursoRow {
-    pub fn from_turso_values(values: Vec<Value>, fields: Arc<[String]>) -> Self {
+    pub const fn from_turso_values(values: Vec<Value>, fields: Arc<[String]>) -> Self {
         Self { values, fields }
     }
 }
