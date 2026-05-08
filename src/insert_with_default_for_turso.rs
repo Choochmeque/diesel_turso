@@ -1,13 +1,41 @@
+//! Batch-insert support for inserts that may omit defaultable columns.
+//!
+//! turso (like sqlite) doesn't accept a `DEFAULT` keyword in multi-row
+//! `VALUES` lists, so a `Vec<NewT>` where some rows have `Some(_)` and
+//! others have `None` for an `Option<T>`-against-non-nullable-with-default
+//! column can't be emitted as a single `INSERT … VALUES (…), (…)`.
+//! diesel solves this for sqlite with a type-level dispatch that picks
+//! per-row inserts when any field is defaultable. None of those types are
+//! re-exported by diesel even under the third-party-backend feature, so
+//! we keep a local copy of the dispatch infrastructure here:
+//!
+//! - [`Yes`] / [`No`] / [`Any`] / [`ContainsDefaultableValue`] — type-level
+//!   "any field is defaultable?" predicate, reduced over the tuple of
+//!   column-insert-values that the `Insertable` derive produces.
+//! - The dispatcher impl on `InsertStatement<…BatchInsert<Vec<…>, …>>`
+//!   that routes to `(Yes, …)` for per-row inserts or `(No, …)` for
+//!   single-statement `VALUES (…), (…)` emission.
+//! - [`TursoBatchInsertWrapper`] — a `#[repr(transparent)]` newtype that
+//!   provides `QueryFragment<TursoBackend>` (and the related traits) for
+//!   the batched `(No, …)` path. We keep this off the unwrapped
+//!   `BatchInsert<…>` itself: if both impls existed, diesel-async's
+//!   blanket `ExecuteDsl<Conn, DB> for T: QueryFragment<DB>` would
+//!   intercept the dispatcher.
+//!
+//! Reused from diesel: `BatchInsert`, `ValuesClause`, `InsertStatement`,
+//! `ColumnInsertValue`, `DefaultableColumnInsertValue`,
+//! `CanInsertInSingleQuery`, `InsertValues`, `QueryFragment`, `QueryId`,
+//! `AstPass`, and the `diesel_derives::__diesel_for_each_tuple!` macro.
+
 use crate::backend::TursoBackend;
 use crate::AsyncTursoConnection;
 use diesel::insertable::{
     CanInsertInSingleQuery, ColumnInsertValue, DefaultableColumnInsertValue, InsertValues,
 };
 use diesel::prelude::*;
-use diesel::query_builder::{AstPass, DebugQuery, QueryFragment, QueryId};
+use diesel::query_builder::{AstPass, QueryFragment, QueryId};
 use diesel::query_builder::{BatchInsert, InsertStatement, ValuesClause};
 use diesel_async::AsyncConnectionCore;
-use std::fmt::{self, Debug, Display};
 
 use diesel_async::methods::ExecuteDsl;
 
@@ -49,8 +77,13 @@ impl Any<Self> for Yes {
     type Out = Self;
 }
 
-// TODO: do we need it?
-#[allow(dead_code)]
+/// Type-level "contains a defaultable column?" predicate. The
+/// `Insertable` derive on a struct produces a tuple of
+/// `ColumnInsertValue<…>` (every field is provided) and
+/// `DefaultableColumnInsertValue<…>` (the field is `Option<T>` against a
+/// non-nullable column with a DB default). This trait reduces that tuple
+/// to a single `Yes` / `No` so the `ExecuteDsl` dispatcher below can pick
+/// the appropriate batch-insert path.
 pub trait ContainsDefaultableValue {
     type Out: Any<Yes> + Any<No>;
 }
@@ -84,115 +117,122 @@ where
     type Out = T::Out;
 }
 
-// TODO: do we need it?
-#[allow(dead_code)]
-pub trait DebugQueryHelper<ContainsDefaultableValue> {
-    fn fmt_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
-    fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+// `Insertable` derives produce a tuple of column-insert-values, one per
+// struct field. ContainsDefaultableValue reduces a tuple to `Yes` if
+// *any* element is `Yes`, otherwise `No`. The recursion is
+// `<T1::Out as Any<<T2::Out as Any<<T3::Out as Any<…>>::Out>>::Out>>::Out`,
+// driven by the macro from `diesel_derives` that expands across all
+// supported tuple arities.
+macro_rules! tuple_impls {
+    ($(
+        $Tuple:tt {
+            $(($idx:tt) -> $T:ident, $ST:ident, $TT:ident,)+
+        }
+    )+) => {
+        $(
+            impl_contains_defaultable_value!($($T,)*);
+        )*
+    }
 }
 
-impl<T, V, QId, Op, Ret, const STATIC_QUERY_ID: bool> DebugQueryHelper<Yes>
-    for DebugQuery<
-        '_,
-        InsertStatement<T, BatchInsert<Vec<ValuesClause<V, T>>, T, QId, STATIC_QUERY_ID>, Op, Ret>,
-        TursoBackend,
-    >
+macro_rules! impl_contains_defaultable_value {
+    (
+        @build
+        start_ts = [$($ST: ident,)*],
+        ts = [$T1: ident,],
+        bounds = [$($bounds: tt)*],
+        out = [$($out: tt)*],
+    ) => {
+        impl<$($ST,)*> ContainsDefaultableValue for ($($ST,)*)
+        where
+            $($ST: ContainsDefaultableValue,)*
+            $($bounds)*
+            $T1::Out: Any<$($out)*>,
+        {
+            type Out = <$T1::Out as Any<$($out)*>>::Out;
+        }
+    };
+    (
+        @build
+        start_ts = [$($ST: ident,)*],
+        ts = [$T1: ident, $($T: ident,)+],
+        bounds = [$($bounds: tt)*],
+        out = [$($out: tt)*],
+    ) => {
+        impl_contains_defaultable_value! {
+            @build
+            start_ts = [$($ST,)*],
+            ts = [$($T,)*],
+            bounds = [$($bounds)* $T1::Out: Any<$($out)*>,],
+            out = [<$T1::Out as Any<$($out)*>>::Out],
+        }
+    };
+    ($T1: ident, $($T: ident,)+) => {
+        impl_contains_defaultable_value! {
+            @build
+            start_ts = [$T1, $($T,)*],
+            ts = [$($T,)*],
+            bounds = [],
+            out = [$T1::Out],
+        }
+    };
+    ($T1: ident,) => {
+        impl<$T1> ContainsDefaultableValue for ($T1,)
+        where $T1: ContainsDefaultableValue,
+        {
+            type Out = <$T1 as ContainsDefaultableValue>::Out;
+        }
+    }
+}
+
+diesel_derives::__diesel_for_each_tuple!(tuple_impls);
+
+// Dispatcher — see module-level doc. Picks `(Yes, …)` (per-row) or
+// `(No, …)` (single-statement `VALUES (…), (…)`) based on whether any
+// field of `V` is defaultable.
+impl<V, T, QId, Op, O, const STATIC_QUERY_ID: bool> ExecuteDsl<AsyncTursoConnection, TursoBackend>
+    for InsertStatement<T, BatchInsert<Vec<ValuesClause<V, T>>, T, QId, STATIC_QUERY_ID>, Op>
 where
-    V: QueryFragment<TursoBackend>,
-    T: Copy + QuerySource,
-    Op: Copy,
-    Ret: Copy,
-    for<'b> InsertStatement<T, &'b ValuesClause<V, T>, Op, Ret>: QueryFragment<TursoBackend>,
+    T: QuerySource,
+    V: ContainsDefaultableValue<Out = O>,
+    O: Default,
+    (O, Self): ExecuteDsl<AsyncTursoConnection, TursoBackend>,
 {
-    fn fmt_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Since we can't access query field, we'll provide a generic implementation
-        f.debug_struct("BatchInsertQuery")
-            .field("backend", &"Turso")
-            .finish()
-    }
-
-    fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Since we can't access query field, we'll provide a generic implementation
-        writeln!(f, "-- Turso batch insert query")
+    fn execute<'conn, 'query>(
+        query: Self,
+        conn: &'conn mut AsyncTursoConnection,
+    ) -> <AsyncTursoConnection as AsyncConnectionCore>::ExecuteFuture<'conn, 'query>
+    where
+        Self: 'query,
+    {
+        <(O, Self) as ExecuteDsl<AsyncTursoConnection, TursoBackend>>::execute(
+            (O::default(), query),
+            conn,
+        )
     }
 }
 
-#[allow(unsafe_code)] // cast to transparent wrapper type
-impl<'a, T, V, QId, Op, const STATIC_QUERY_ID: bool> DebugQueryHelper<No>
-    for DebugQuery<
-        'a,
-        InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
-        TursoBackend,
-    >
-where
-    T: Copy + QuerySource,
-    Op: Copy,
-    DebugQuery<
-        'a,
-        InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
-        TursoBackend,
-    >: Debug + Display,
-{
-    fn fmt_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = unsafe {
-            // This cast is safe as `TursoBatchInsertWrapper` is #[repr(transparent)]
-            &*std::ptr::from_ref::<
-                DebugQuery<
-                    'a,
-                    InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
-                    TursoBackend,
-                >,
-            >(self)
-            .cast::<DebugQuery<
-                'a,
-                InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
-                TursoBackend,
-            >>()
-        };
-        <_ as Debug>::fmt(value, f)
-    }
-
-    fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = unsafe {
-            // This cast is safe as `TursoBatchInsertWrapper` is #[repr(transparent)]
-            &*std::ptr::from_ref::<
-                DebugQuery<
-                    'a,
-                    InsertStatement<T, BatchInsert<V, T, QId, STATIC_QUERY_ID>, Op>,
-                    TursoBackend,
-                >,
-            >(self)
-            .cast::<DebugQuery<
-                'a,
-                InsertStatement<T, TursoBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>, Op>,
-                TursoBackend,
-            >>()
-        };
-        <_ as Display>::fmt(value, f)
-    }
-}
-
-// Note: Removed generic ExecuteDsl implementation to avoid conflicts with diesel_async generic impl
-// The default diesel_async ExecuteDsl will handle normal cases now that QueryFragment is implemented
-
-// ExecuteDsl implementation for (Yes, InsertStatement) for async transactions
+// `(Yes, …)` path: any field is defaultable, so each row may have its
+// own column shape (`None` field → column omitted from that row's SQL).
+// Emit one INSERT per row.
+//
+// Critical detail: SQL emission happens *before* the async block, so the
+// future only captures owned `(String, Vec<turso::Value>)` data — no
+// references to `V`. That keeps `V` lifetime-unconstrained, allowing
+// `.values(&rows)` (borrowed `Vec`) to work without forcing `V: 'static`
+// or running into the late-bound `'conn` collision that
+// `V: 'conn` would cause.
 impl<V, T, QId, Op, const STATIC_QUERY_ID: bool> ExecuteDsl<AsyncTursoConnection, TursoBackend>
     for (
         Yes,
         InsertStatement<T, BatchInsert<Vec<ValuesClause<V, T>>, T, QId, STATIC_QUERY_ID>, Op>,
     )
 where
-    T: Table + Copy + QueryId + 'static + Send + Sync,
+    T: Table + Copy + QueryId + 'static,
     T::FromClause: QueryFragment<TursoBackend>,
-    Op: Copy + QueryId + QueryFragment<TursoBackend> + Send + Sync + 'static,
-    V: InsertValues<TursoBackend, T>
-        + CanInsertInSingleQuery<TursoBackend>
-        + QueryId
-        + Send
-        + Sync
-        + 'static,
-    for<'a> InsertStatement<T, &'a ValuesClause<V, T>, Op>:
-        ExecuteDsl<AsyncTursoConnection, TursoBackend>,
+    Op: Copy + QueryId + QueryFragment<TursoBackend>,
+    V: InsertValues<TursoBackend, T> + CanInsertInSingleQuery<TursoBackend> + QueryId,
+    for<'a> InsertStatement<T, &'a ValuesClause<V, T>, Op>: QueryFragment<TursoBackend>,
 {
     fn execute<'conn, 'query>(
         (Yes, query): Self,
@@ -201,14 +241,44 @@ where
     where
         Self: 'query,
     {
-        Box::pin(async move {
-            let mut result = 0;
-            for record in &query.records.values {
+        // Emit (sql, binds) for each row up front, while V is still in
+        // scope. After this, no `V` references survive into the future.
+        let prepared: diesel::QueryResult<Vec<(String, Vec<turso::Value>)>> = query
+            .records
+            .values
+            .iter()
+            .map(|record| {
                 let stmt =
                     InsertStatement::new(query.target, record, query.operator, query.returning);
-                result += diesel_async::RunQueryDsl::execute(stmt, conn).await?;
+                let mut qb = crate::query_builder::TursoQueryBuilder::default();
+                <_ as QueryFragment<TursoBackend>>::to_sql(&stmt, &mut qb, &TursoBackend)?;
+                let binds = crate::construct_bind_data(&stmt)?;
+                Ok((qb.sql, binds))
+            })
+            .collect();
+
+        Box::pin(async move {
+            let prepared = prepared?;
+            let mut total = 0usize;
+            for (sql, binds) in prepared {
+                let inner = conn.ensure_connection().await?;
+                let mut prep = inner.prepare(&sql);
+                prep.bind(binds);
+                // Each per-row SQL is unique-ish (default columns vary)
+                // and we already paid the prepare cost above — no point
+                // populating turso's cache for these.
+                prep.set_cacheable(false);
+                let result = inner.execute(&prep).await.map_err(|e| {
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown,
+                        Box::new(crate::utils::TursoError {
+                            message: e.to_string(),
+                        }),
+                    )
+                })?;
+                total += result.changes;
             }
-            Ok(result)
+            Ok(total)
         })
     }
 }
@@ -310,33 +380,10 @@ where
     }
 }
 
-// QueryFragment implementation for BatchInsert with TursoBackend and SqliteBatchInsert
-impl<Tab, V, QId, const HAS_STATIC_QUERY_ID: bool>
-    QueryFragment<TursoBackend, crate::backend::SqliteBatchInsert>
-    for BatchInsert<Vec<ValuesClause<V, Tab>>, Tab, QId, HAS_STATIC_QUERY_ID>
-where
-    ValuesClause<V, Tab>: QueryFragment<TursoBackend>,
-    V: QueryFragment<TursoBackend>,
-{
-    fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, TursoBackend>) -> QueryResult<()> {
-        if !HAS_STATIC_QUERY_ID {
-            out.unsafe_to_cache_prepared();
-        }
-
-        let mut values = self.values.iter();
-        if let Some(value) = values.next() {
-            value.walk_ast(out.reborrow())?;
-        }
-        for value in values {
-            out.push_sql(", (");
-            value.values.walk_ast(out.reborrow())?;
-            out.push_sql(")");
-        }
-        Ok(())
-    }
-}
-
-// CanInsertInSingleQuery implementations for TursoBackend that does not support default keywords
+// `CanInsertInSingleQuery` impls for collection types. diesel core has
+// these gated to `IsoSqlDefaultKeyword`; our backend uses
+// `DoesNotSupportDefaultKeyword`, so the upstream impls don't apply and
+// we provide local equivalents.
 impl<T, Table, QId, const HAS_STATIC_QUERY_ID: bool> CanInsertInSingleQuery<TursoBackend>
     for BatchInsert<T, Table, QId, HAS_STATIC_QUERY_ID>
 where

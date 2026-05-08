@@ -172,6 +172,22 @@ struct NewPost<'a> {
     created_at: chrono::NaiveDateTime,
 }
 
+// `published` is `BOOLEAN NOT NULL DEFAULT 0`. Mapping it to `Option<bool>`
+// here exercises diesel's `DefaultableColumnInsertValue` path: `None`
+// causes the column to be omitted from the emitted SQL so the DB default
+// is used. Vec<NewPostMaybePublished> drives the
+// `(Yes, BatchInsert<…>)` per-row `ExecuteDsl` impl in
+// `insert_with_default_for_turso.rs`.
+#[derive(diesel::Insertable)]
+#[diesel(table_name = posts)]
+struct NewPostMaybePublished<'a> {
+    title: &'a str,
+    body: &'a str,
+    published: Option<bool>,
+    user_id: i32,
+    created_at: chrono::NaiveDateTime,
+}
+
 #[derive(
     diesel::Queryable,
     diesel::Selectable,
@@ -848,6 +864,171 @@ async fn test_batch_operations() -> QueryResult<()> {
 
     let remaining = users::table.count().get_result::<i64>(&mut conn).await?;
     assert_eq!(remaining, 75);
+
+    drop(conn);
+    Ok(())
+}
+
+// Batch insert where some rows omit a defaultable column. Drives the
+// `(Yes, BatchInsert<…>)` `ExecuteDsl` path in
+// `insert_with_default_for_turso.rs`, which falls back to per-row
+// inserts because SQLite/turso doesn't support a `DEFAULT` keyword in
+// multi-row VALUES. Verifies the omitted column resolves to the table
+// default (`published BOOLEAN NOT NULL DEFAULT 0`).
+#[tokio::test]
+async fn test_batch_insert_with_default_values() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let author_id = diesel::insert_into(users::table)
+        .values(users::name.eq("DefaultAuthor"))
+        .returning(users::id)
+        .get_result::<i32>(&mut conn)
+        .await?;
+
+    let now = chrono::Utc::now().naive_utc();
+    let rows = vec![
+        NewPostMaybePublished {
+            title: "explicit-true",
+            body: "body",
+            published: Some(true),
+            user_id: author_id,
+            created_at: now,
+        },
+        NewPostMaybePublished {
+            title: "default",
+            body: "body",
+            published: None,
+            user_id: author_id,
+            created_at: now,
+        },
+        NewPostMaybePublished {
+            title: "explicit-false",
+            body: "body",
+            published: Some(false),
+            user_id: author_id,
+            created_at: now,
+        },
+    ];
+
+    let n = diesel::insert_into(posts::table)
+        .values(&rows)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(n, 3, "all 3 rows should be inserted");
+
+    // The `None` row must take the column default (`0` / `false`); the
+    // `Some(_)` rows must round-trip the explicit value.
+    let pub_explicit_true: bool = posts::table
+        .filter(posts::title.eq("explicit-true"))
+        .select(posts::published)
+        .get_result(&mut conn)
+        .await?;
+    let pub_default: bool = posts::table
+        .filter(posts::title.eq("default"))
+        .select(posts::published)
+        .get_result(&mut conn)
+        .await?;
+    let pub_explicit_false: bool = posts::table
+        .filter(posts::title.eq("explicit-false"))
+        .select(posts::published)
+        .get_result(&mut conn)
+        .await?;
+    assert!(pub_explicit_true);
+    assert!(
+        !pub_default,
+        "omitted `published` should fall back to DB default 0"
+    );
+    assert!(!pub_explicit_false);
+
+    drop(conn);
+    Ok(())
+}
+
+// Empty `Vec<Insertable>` batch insert. Diesel's macro picks the
+// `(Yes/No, BatchInsert<…>)` `ExecuteDsl` impl based on whether any
+// field is defaultable; both code paths must handle a zero-length
+// `Vec` without panicking and report 0 rows affected. Matches SQLite
+// semantics where an INSERT with no rows is a no-op.
+#[tokio::test]
+async fn test_batch_insert_empty_batch() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let baseline = users::table.count().get_result::<i64>(&mut conn).await?;
+
+    // Empty Vec<NewUser> — no defaultable columns, hits the `(No, …)` path.
+    let no_default: Vec<NewUser> = Vec::new();
+    let n = diesel::insert_into(users::table)
+        .values(&no_default)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(n, 0, "empty `Vec<NewUser>` should report 0 rows affected");
+
+    // Empty Vec<NewPostMaybePublished> — has a defaultable field, hits
+    // the `(Yes, …)` per-row loop path.
+    let with_default: Vec<NewPostMaybePublished> = Vec::new();
+    let n = diesel::insert_into(posts::table)
+        .values(&with_default)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(
+        n, 0,
+        "empty `Vec<NewPostMaybePublished>` should report 0 rows affected",
+    );
+
+    let after = users::table.count().get_result::<i64>(&mut conn).await?;
+    assert_eq!(after, baseline, "row count unchanged");
+
+    drop(conn);
+    Ok(())
+}
+
+// Defaultable insert combined with `.returning(...)`. Each row in a
+// defaultable batch gets its own per-row INSERT (via the `(Yes, …)`
+// path), so RETURNING must work on each one and surface the
+// DB-resolved default.
+#[tokio::test]
+async fn test_batch_insert_with_default_values_and_returning() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let author_id = diesel::insert_into(users::table)
+        .values(users::name.eq("RetAuthor"))
+        .returning(users::id)
+        .get_result::<i32>(&mut conn)
+        .await?;
+
+    let now = chrono::Utc::now().naive_utc();
+    let row_explicit = NewPostMaybePublished {
+        title: "ret-explicit-true",
+        body: "body",
+        published: Some(true),
+        user_id: author_id,
+        created_at: now,
+    };
+    let row_default = NewPostMaybePublished {
+        title: "ret-default",
+        body: "body",
+        published: None,
+        user_id: author_id,
+        created_at: now,
+    };
+
+    // RETURNING on the explicit row.
+    let r1: (String, bool) = diesel::insert_into(posts::table)
+        .values(&row_explicit)
+        .returning((posts::title, posts::published))
+        .get_result(&mut conn)
+        .await?;
+    assert_eq!(r1, ("ret-explicit-true".to_string(), true));
+
+    // RETURNING on the row that omits the default — the returned
+    // `published` must be the DB default (`false`), not NULL or the
+    // sentinel value diesel might have substituted.
+    let r2: (String, bool) = diesel::insert_into(posts::table)
+        .values(&row_default)
+        .returning((posts::title, posts::published))
+        .get_result(&mut conn)
+        .await?;
+    assert_eq!(r2, ("ret-default".to_string(), false));
 
     drop(conn);
     Ok(())

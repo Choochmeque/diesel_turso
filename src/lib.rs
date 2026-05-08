@@ -327,7 +327,7 @@ const fn cache_size_enabled(size: CacheSize) -> Option<bool> {
     }
 }
 
-fn construct_bind_data<T>(query: &T) -> Result<Vec<turso::Value>, diesel::result::Error>
+pub(crate) fn construct_bind_data<T>(query: &T) -> Result<Vec<turso::Value>, diesel::result::Error>
 where
     T: QueryFragment<TursoBackend>,
 {

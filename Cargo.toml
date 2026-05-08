@@ -23,6 +23,7 @@ r2d2 = [
 diesel = { version = "2.3", features = [
     "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
 ] }
+diesel_derives = "2.3"
 diesel_migrations = "2.3"
 diesel-async = "0.9"
 futures-util = "0.3.31"
