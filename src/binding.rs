@@ -131,6 +131,21 @@ impl TursoConnection {
         let params: Vec<Value> = stmt.binds.clone();
         let rows_affected = prepared.execute(params).await?;
 
+        // Single-statement DDL routed through `execute()` (e.g. via
+        // `diesel::sql_query("CREATE TABLE …").execute(&mut conn)`) can
+        // invalidate the schema-bound metadata of *other* cached prepared
+        // statements. Detect DDL by inspecting the leading keyword and flush
+        // the cache so subsequent queries re-prepare against the current
+        // schema. Multi-statement batches go through `execute_batch`, which
+        // flushes unconditionally.
+        if is_ddl(&stmt.sql) {
+            self.cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entries
+                .clear();
+        }
+
         Ok(TursoResult {
             column_names: Arc::from([]),
             rows: Vec::new(),
@@ -207,5 +222,42 @@ impl TursoPreparedStatement {
     pub fn bind(&mut self, values: Vec<Value>) -> &mut Self {
         self.binds = values;
         self
+    }
+}
+
+/// Returns `true` if `sql` begins with a `SQLite` DDL keyword. DDL changes
+/// the schema and can invalidate the metadata of cached prepared
+/// statements. `turso`'s public API does not expose a parsed statement
+/// kind or a `readonly` flag, so we fall back to first-keyword inspection.
+fn is_ddl(sql: &str) -> bool {
+    sql.split_whitespace().next().is_some_and(|w| {
+        matches!(
+            w.to_ascii_uppercase().as_str(),
+            "CREATE" | "DROP" | "ALTER" | "REINDEX" | "ATTACH" | "DETACH" | "VACUUM"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ddl;
+
+    #[test]
+    fn detects_ddl() {
+        assert!(is_ddl("CREATE TABLE t (id INTEGER)"));
+        assert!(is_ddl("create table t (id integer)"));
+        assert!(is_ddl("  DROP TABLE t"));
+        assert!(is_ddl("ALTER TABLE t ADD COLUMN c INTEGER"));
+        assert!(is_ddl("VACUUM"));
+    }
+
+    #[test]
+    fn rejects_non_ddl() {
+        assert!(!is_ddl("SELECT 1"));
+        assert!(!is_ddl("INSERT INTO t VALUES (1)"));
+        assert!(!is_ddl("UPDATE t SET c = 1"));
+        assert!(!is_ddl("DELETE FROM t"));
+        assert!(!is_ddl(""));
+        assert!(!is_ddl("   "));
     }
 }
