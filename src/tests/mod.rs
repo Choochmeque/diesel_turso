@@ -1819,20 +1819,21 @@ struct CacheInvalidationRow {
     a: i32,
 }
 
-// `batch_execute` is the path diesel uses for schema migrations and any
-// multi-statement DDL. It must invalidate the per-connection prepared-
-// statement cache, otherwise a query whose SQL text matches one that ran
-// *before* the schema change could be served from a stale cached plan.
+// End-to-end correctness check across a schema change made via
+// `batch_execute` (the path diesel uses for migrations and any
+// multi-statement DDL): prime turso's prepared-statement cache with a
+// `SELECT`, drop+recreate+repopulate the table inside one batch, then
+// re-run the *exact same* SQL string. The cached plan from before the
+// schema change must not be served.
 //
-// Same-SQL repro: prime the cache with `SELECT a FROM cache_invalidation_t`,
-// drop+recreate+repopulate the table via `batch_execute`, then run the
-// *exact same* SELECT. With the cache flushed, we re-prepare against the
-// new schema and see the new row. (Without the flush, modern turso would
-// still recover via SDK-level `SQLITE_SCHEMA` retry, but that costs an
-// extra round-trip and silently relies on the SDK's re-prepare contract;
-// proactively clearing the cache makes the contract explicit on our side.)
+// We don't own the cache anymore — turso's `Connection::prepare_cached`
+// validates `Program::is_compatible_with(&connection)` on every lookup
+// and re-prepares against the current schema when the program is no
+// longer compatible. This test pins that contract from the diesel side:
+// if turso ever stopped invalidating on schema change, this test would
+// fail.
 #[tokio::test]
-async fn test_batch_execute_invalidates_statement_cache() -> QueryResult<()> {
+async fn test_batch_execute_schema_change_observes_new_rows() -> QueryResult<()> {
     let mut conn = connection().await;
 
     diesel::sql_query("CREATE TABLE cache_invalidation_t (a INTEGER)")
@@ -1842,14 +1843,13 @@ async fn test_batch_execute_invalidates_statement_cache() -> QueryResult<()> {
         .execute(&mut conn)
         .await?;
 
-    // Prime the cache.
+    // Prime turso's cache with this exact SQL string.
     let before: Vec<CacheInvalidationRow> = diesel::sql_query("SELECT a FROM cache_invalidation_t")
         .load(&mut conn)
         .await?;
     assert_eq!(before, vec![CacheInvalidationRow { a: 1 }]);
 
-    // Schema-changing batch — this is what `execute_batch` should flush
-    // the cache for.
+    // Schema-changing batch.
     conn.batch_execute(
         "DROP TABLE cache_invalidation_t; \
          CREATE TABLE cache_invalidation_t (a INTEGER); \
@@ -1857,7 +1857,8 @@ async fn test_batch_execute_invalidates_statement_cache() -> QueryResult<()> {
     )
     .await?;
 
-    // Same SQL string as before — would hit the cache if we didn't flush.
+    // Same SQL string as before — turso must re-prepare against the new
+    // schema (not return the stale plan) and surface the new row.
     let after: Vec<CacheInvalidationRow> = diesel::sql_query("SELECT a FROM cache_invalidation_t")
         .load(&mut conn)
         .await?;
