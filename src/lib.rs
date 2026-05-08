@@ -153,7 +153,10 @@ impl AsyncConnectionCore for AsyncTursoConnection {
             let rows: Vec<QueryResult<TursoRow>> = result
                 .rows
                 .into_iter()
-                .map(|values| Ok(TursoRow::from_turso_values(values, column_names.clone())))
+                .map(|values| {
+                    TursoRow::from_turso_values(values, column_names.clone())
+                        .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))
+                })
                 .collect();
             Ok(stream::iter(rows).boxed())
         }
