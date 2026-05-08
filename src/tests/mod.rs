@@ -2035,47 +2035,56 @@ async fn test_prepared_statement_cache_size_configurable() -> QueryResult<()> {
 }
 
 // `QueryFragment::is_safe_to_cache_prepared` must be honored. ORM-built
-// queries are cacheable and should land in the per-connection cache;
-// `diesel::sql_query()` walks the AST with `unsafe_to_cache_prepared`
-// and must bypass the cache in both directions (no lookup, no insert).
+// queries are cacheable and should route through turso's
+// `Connection::prepare_cached`; `diesel::sql_query()` walks the AST with
+// `unsafe_to_cache_prepared` and must route through `Connection::prepare`
+// instead. There's no public API on turso's `Connection` to introspect
+// the cache itself, so we assert the routing decision via per-connection
+// counters maintained by `prepare_one`.
 #[tokio::test]
 async fn test_unsafe_to_cache_prepared_signal_bypasses_cache() -> QueryResult<()> {
     let mut conn = connection().await;
 
-    // Snapshot cache size after setup so the assertions are deltas, not
-    // absolutes (setup may or may not have left entries behind).
-    let baseline = conn
+    // Snapshot routing counters after setup so assertions are deltas.
+    let (cached_before, uncached_before) = conn
         .connection
         .as_ref()
         .expect("turso connection initialized")
-        .cache_len();
+        .cache_route_counts();
 
-    // ORM-built query: diesel reports it safe to cache. Cache grows by 1.
+    // ORM-built query: diesel reports it safe to cache → cached route.
     let _: i64 = users::table.count().get_result(&mut conn).await?;
-    let after_orm = conn
+    let (cached_after_orm, uncached_after_orm) = conn
         .connection
         .as_ref()
         .expect("turso connection initialized")
-        .cache_len();
+        .cache_route_counts();
     assert_eq!(
-        after_orm,
-        baseline + 1,
-        "cacheable ORM query should add exactly 1 cache entry",
+        (
+            cached_after_orm - cached_before,
+            uncached_after_orm - uncached_before
+        ),
+        (1, 0),
+        "cacheable ORM query must route through prepare_cached, not prepare",
     );
 
-    // `sql_query()` walks the AST with `unsafe_to_cache_prepared`, so the
-    // cache must NOT grow regardless of SQL text uniqueness.
+    // `sql_query()` walks the AST with `unsafe_to_cache_prepared`, so it
+    // must route through `prepare`, not `prepare_cached`.
     diesel::sql_query("SELECT 1 AS one")
         .execute(&mut conn)
         .await?;
-    let after_raw = conn
+    let (cached_after_raw, uncached_after_raw) = conn
         .connection
         .as_ref()
         .expect("turso connection initialized")
-        .cache_len();
+        .cache_route_counts();
     assert_eq!(
-        after_raw, after_orm,
-        "uncacheable sql_query() must NOT add a cache entry",
+        (
+            cached_after_raw - cached_after_orm,
+            uncached_after_raw - uncached_after_orm
+        ),
+        (0, 1),
+        "uncacheable sql_query() must route through prepare, not prepare_cached",
     );
 
     drop(conn);

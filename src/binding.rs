@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use turso::{Builder, Connection, Database, Statement, Value};
 
 #[derive(Debug, Clone)]
@@ -10,32 +10,24 @@ pub struct TursoDatabase {
 #[derive(Debug, Clone)]
 pub struct TursoConnection {
     pub conn: Arc<Connection>,
-    /// Per-connection prepared-statement cache keyed by SQL text.
-    /// Default is enabled (matches diesel's `CacheSize::Unbounded`).
-    cache: Arc<Mutex<StatementCache>>,
+    /// Whether prepared statements should route through turso's
+    /// per-connection cache (`Connection::prepare_cached`) or always
+    /// re-prepare (`Connection::prepare`). Mirrors diesel's `CacheSize`
+    /// — `Unbounded` (the default) is `true`, `Disabled` is `false`.
+    cache_enabled: Arc<AtomicBool>,
+    /// Test-only routing counters. There's no public API on turso's
+    /// `Connection` to inspect the cache state from outside, so tests
+    /// instead assert that we *chose* the cached vs. uncached path the
+    /// expected number of times.
+    #[cfg(test)]
+    counters: Arc<TestCounters>,
 }
 
-struct StatementCache {
-    enabled: bool,
-    entries: HashMap<String, Statement>,
-}
-
-impl std::fmt::Debug for StatementCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StatementCache")
-            .field("enabled", &self.enabled)
-            .field("len", &self.entries.len())
-            .finish()
-    }
-}
-
-impl Default for StatementCache {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            entries: HashMap::new(),
-        }
-    }
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestCounters {
+    cached_calls: std::sync::atomic::AtomicU64,
+    uncached_calls: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +35,8 @@ pub struct TursoPreparedStatement {
     pub sql: String,
     pub binds: Vec<Value>,
     /// Mirrors diesel's `QueryFragment::is_safe_to_cache_prepared` signal.
-    /// When `false`, the per-connection statement cache is bypassed and a
-    /// fresh `turso::Statement` is prepared for this call. Defaults to
-    /// `true`; the lib-level callers (`load`/`execute_returning_count`)
-    /// flip it off when diesel reports the query is unsafe to cache.
+    /// When `false`, this call bypasses turso's prepared-statement cache
+    /// regardless of the per-connection cache toggle.
     pub cacheable: bool,
 }
 
@@ -68,7 +58,9 @@ impl TursoDatabase {
         let conn = Arc::new(self.db.connect()?);
         Ok(TursoConnection {
             conn,
-            cache: Arc::new(Mutex::new(StatementCache::default())),
+            cache_enabled: Arc::new(AtomicBool::new(true)),
+            #[cfg(test)]
+            counters: Arc::new(TestCounters::default()),
         })
     }
 }
@@ -83,93 +75,61 @@ impl TursoConnection {
         }
     }
 
-    /// Number of currently cached prepared statements. Exposed for tests
-    /// that need to assert the per-connection cache grew (or didn't) after
-    /// a query — there's no other way to observe cache state from outside
-    /// the binding module.
-    #[cfg(test)]
-    pub(crate) fn cache_len(&self) -> usize {
-        self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .len()
-    }
-
-    /// Enable or disable the prepared-statement cache. Disabling clears any
-    /// already-cached entries.
+    /// Enable or disable routing through turso's prepared-statement cache
+    /// for future `prepare_one` calls. turso has no public API to evict
+    /// entries already cached on its connection, so flipping this to
+    /// `false` cannot remove what's already there — it only steers
+    /// subsequent calls to `Connection::prepare`. That's the right
+    /// behaviour for diesel's `CacheSize::Disabled`: avoid producing new
+    /// cached state, while not pretending to flush state that turso owns.
     pub fn set_cache_enabled(&self, enabled: bool) {
-        let mut cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.enabled = enabled;
-        if !enabled {
-            cache.entries.clear();
-        }
+        self.cache_enabled.store(enabled, Ordering::Relaxed);
     }
 
-    /// Look up a cached prepared statement for `sql` or prepare and cache one.
-    /// Returns an owned `Statement` clone (cheap — `Statement` is internally
-    /// `Arc<Mutex<…>>`). When `cacheable` is `false` (mirroring diesel's
-    /// `QueryFragment::is_safe_to_cache_prepared`), the cache is bypassed
-    /// in both directions: no lookup, no insert.
-    async fn prepare_cached(&self, sql: &str, cacheable: bool) -> Result<Statement, turso::Error> {
-        if !cacheable {
-            return self.conn.prepare(sql).await;
+    /// Prepare a single statement, dispatching to turso's
+    /// `prepare_cached` when allowed and `prepare` otherwise. turso's
+    /// `prepare_cached` already validates schema compatibility on every
+    /// lookup (`Program::is_compatible_with`) — so DDL through any path
+    /// (including batches with leading `/* … */` comments) invalidates
+    /// stale entries automatically. This means we don't need our own
+    /// keyword inspection, our own cache map, or a manual flush after
+    /// `execute_batch`.
+    async fn prepare_one(&self, sql: &str, cacheable: bool) -> Result<Statement, turso::Error> {
+        let use_cache = cacheable && self.cache_enabled.load(Ordering::Relaxed);
+        #[cfg(test)]
+        {
+            let counter = if use_cache {
+                &self.counters.cached_calls
+            } else {
+                &self.counters.uncached_calls
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
         }
-        // Bind to a local so the MutexGuard is released before the `await`
-        // below — never hold a sync `MutexGuard` across `.await`.
-        let cached = self
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .lookup(sql);
-        if let Some(stmt) = cached {
-            return Ok(stmt);
+        if use_cache {
+            self.conn.prepare_cached(sql).await
+        } else {
+            self.conn.prepare(sql).await
         }
-        let stmt = self.conn.prepare(sql).await?;
-        self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(sql, &stmt);
-        Ok(stmt)
     }
 
     pub async fn execute(
         &self,
         stmt: &TursoPreparedStatement,
     ) -> Result<TursoResult, turso::Error> {
-        let mut prepared = self.prepare_cached(&stmt.sql, stmt.cacheable).await?;
+        let mut prepared = self.prepare_one(&stmt.sql, stmt.cacheable).await?;
 
         // If the prepared statement produces result columns (SELECT, PRAGMA
         // with output, INSERT/UPDATE/DELETE … RETURNING, …) we can't call
         // `Statement::execute` on it — turso surfaces the first stepped row
         // as a `Misuse("unexpected row …")` error. Detect via column metadata
-        // at prepare time and route through `query()` instead. This is
-        // structural (no error-string matching) and stable across SDK
-        // versions.
+        // at prepare time and re-use the same prepared statement through
+        // the row-stepping path instead of preparing a second time.
         if !prepared.columns().is_empty() {
-            return self.query(stmt).await;
+            return Self::step_rows(prepared, stmt.binds.clone()).await;
         }
 
         let params: Vec<Value> = stmt.binds.clone();
         let rows_affected = prepared.execute(params).await?;
-
-        // Single-statement DDL routed through `execute()` (e.g. via
-        // `diesel::sql_query("CREATE TABLE …").execute(&mut conn)`) can
-        // invalidate the schema-bound metadata of *other* cached prepared
-        // statements. Detect DDL by inspecting the leading keyword and flush
-        // the cache so subsequent queries re-prepare against the current
-        // schema. Multi-statement batches go through `execute_batch`, which
-        // flushes unconditionally.
-        if is_ddl(&stmt.sql) {
-            self.cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries
-                .clear();
-        }
 
         Ok(TursoResult {
             column_names: Arc::from([]),
@@ -183,27 +143,26 @@ impl TursoConnection {
     }
 
     pub async fn execute_batch(&self, stmt: &TursoPreparedStatement) -> Result<(), turso::Error> {
-        // Batch SQL is multi-statement and not cacheable as a single
-        // prepared statement.
-        let result = self.conn.execute_batch(&stmt.sql).await;
-
-        // Clear the cache regardless of success: SQLite-style batch
-        // execution can partially apply earlier DDL (CREATE/ALTER/DROP)
-        // before a later statement errors, which can leave cached
-        // prepared statements bound to stale schema metadata. The cache
-        // stays *enabled*; we only flush its entries.
-        self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .clear();
-
-        result
+        // Batch SQL is multi-statement and not a single prepared
+        // statement, so it's never cached as a unit. Any DDL inside the
+        // batch invalidates dependent cached statements automatically via
+        // turso's `Program::is_compatible_with` check on the next lookup.
+        self.conn.execute_batch(&stmt.sql).await
     }
 
     pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
-        let mut prepared = self.prepare_cached(&stmt.sql, stmt.cacheable).await?;
-        let params: Vec<Value> = stmt.binds.clone();
+        let prepared = self.prepare_one(&stmt.sql, stmt.cacheable).await?;
+        Self::step_rows(prepared, stmt.binds.clone()).await
+    }
+
+    /// Step through a prepared row-producing statement and assemble a
+    /// `TursoResult`. Shared by `query()` (the load path) and the
+    /// `execute()` re-route for RETURNING / SELECT statements, so the
+    /// re-routed path doesn't have to prepare twice.
+    async fn step_rows(
+        mut prepared: Statement,
+        params: Vec<Value>,
+    ) -> Result<TursoResult, turso::Error> {
         let mut rows_iter = prepared.query(params).await?;
         let column_names: Arc<[String]> = prepared
             .columns()
@@ -236,20 +195,17 @@ impl TursoConnection {
             })?,
         })
     }
-}
 
-impl StatementCache {
-    fn lookup(&self, sql: &str) -> Option<Statement> {
-        if !self.enabled {
-            return None;
-        }
-        self.entries.get(sql).cloned()
-    }
-
-    fn insert(&mut self, sql: &str, stmt: &Statement) {
-        if self.enabled {
-            self.entries.insert(sql.to_string(), stmt.clone());
-        }
+    /// Returns `(cached_route, uncached_route)` — number of times
+    /// `prepare_one` chose `Connection::prepare_cached` vs.
+    /// `Connection::prepare` since this connection was created. Used by
+    /// tests to assert that uncacheable statements bypass the cache.
+    #[cfg(test)]
+    pub(crate) fn cache_route_counts(&self) -> (u64, u64) {
+        (
+            self.counters.cached_calls.load(Ordering::Relaxed),
+            self.counters.uncached_calls.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -264,42 +220,5 @@ impl TursoPreparedStatement {
     pub fn bind(&mut self, values: Vec<Value>) -> &mut Self {
         self.binds = values;
         self
-    }
-}
-
-/// Returns `true` if `sql` begins with a `SQLite` DDL keyword. DDL changes
-/// the schema and can invalidate the metadata of cached prepared
-/// statements. `turso`'s public API does not expose a parsed statement
-/// kind or a `readonly` flag, so we fall back to first-keyword inspection.
-fn is_ddl(sql: &str) -> bool {
-    sql.split_whitespace().next().is_some_and(|w| {
-        matches!(
-            w.to_ascii_uppercase().as_str(),
-            "CREATE" | "DROP" | "ALTER" | "REINDEX" | "ATTACH" | "DETACH" | "VACUUM"
-        )
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_ddl;
-
-    #[test]
-    fn detects_ddl() {
-        assert!(is_ddl("CREATE TABLE t (id INTEGER)"));
-        assert!(is_ddl("create table t (id integer)"));
-        assert!(is_ddl("  DROP TABLE t"));
-        assert!(is_ddl("ALTER TABLE t ADD COLUMN c INTEGER"));
-        assert!(is_ddl("VACUUM"));
-    }
-
-    #[test]
-    fn rejects_non_ddl() {
-        assert!(!is_ddl("SELECT 1"));
-        assert!(!is_ddl("INSERT INTO t VALUES (1)"));
-        assert!(!is_ddl("UPDATE t SET c = 1"));
-        assert!(!is_ddl("DELETE FROM t"));
-        assert!(!is_ddl(""));
-        assert!(!is_ddl("   "));
     }
 }
