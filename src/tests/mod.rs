@@ -1,9 +1,10 @@
 use super::backend::TursoBackend;
 use super::AsyncTursoConnection;
+use diesel::expression_methods::AggregateExpressionMethods;
 use diesel::prelude::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel::{
-    BoolExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryResult, SelectableHelper,
-    TextExpressionMethods,
+    BelongingToDsl, BoolExpressionMethods, GroupedBy, JoinOnDsl, NullableExpressionMethods,
+    QueryResult, SelectableHelper, TextExpressionMethods,
 };
 use diesel_async::*;
 use std::fmt::Debug;
@@ -148,8 +149,9 @@ struct NewUser {
     PartialEq,
     diesel::AsChangeset,
     diesel::Identifiable,
+    diesel::Associations,
 )]
-#[diesel(table_name = posts)]
+#[diesel(table_name = posts, belongs_to(User))]
 struct Post {
     id: i32,
     title: String,
@@ -1546,6 +1548,224 @@ async fn test_window_function_row_number() -> QueryResult<()> {
     assert_eq!(rows[0].rn, 1);
     assert_eq!(rows[1].rn, 2);
     assert_eq!(rows[2].rn, 3);
+
+    drop(conn);
+    Ok(())
+}
+
+// ON CONFLICT DO UPDATE (UPSERT): re-inserting a row with the same PK
+// updates the existing row's columns instead of erroring on the conflict.
+// Also covers `on_conflict_do_nothing` as the no-op variant.
+#[tokio::test]
+async fn test_on_conflict_upsert() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(users::table)
+        .values((users::id.eq(1), users::name.eq("Original")))
+        .execute(&mut conn)
+        .await?;
+
+    // do_update: re-insert with same id, name should change to "Updated"
+    diesel::insert_into(users::table)
+        .values((users::id.eq(1), users::name.eq("ignored")))
+        .on_conflict(users::id)
+        .do_update()
+        .set(users::name.eq("Updated"))
+        .execute(&mut conn)
+        .await?;
+
+    let user: User = users::table.first(&mut conn).await?;
+    assert_eq!(user.name, "Updated");
+    let count = users::table.count().get_result::<i64>(&mut conn).await?;
+    assert_eq!(count, 1, "no new row should be inserted");
+
+    // do_nothing: same conflict, no change
+    diesel::insert_into(users::table)
+        .values((users::id.eq(1), users::name.eq("AlsoIgnored")))
+        .on_conflict_do_nothing()
+        .execute(&mut conn)
+        .await?;
+
+    let user_after: User = users::table.first(&mut conn).await?;
+    assert_eq!(
+        user_after.name, "Updated",
+        "do_nothing must not change name"
+    );
+
+    drop(conn);
+    Ok(())
+}
+
+// Associations: load all users, then load posts belonging to those users,
+// then group posts by user via `grouped_by` to materialize the 1-to-many
+// relationship into `Vec<Vec<Post>>`.
+#[tokio::test]
+async fn test_associations_grouped_by() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    for n in &["U1", "U2"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+    let users_list: Vec<User> = users::table.order(users::id.asc()).load(&mut conn).await?;
+
+    // U1: 2 posts, U2: 1 post.
+    for (idx, count) in [(0usize, 2), (1, 1)] {
+        for j in 0..count {
+            diesel::insert_into(posts::table)
+                .values(&NewPost {
+                    title: &format!("p-{j}"),
+                    body: "x",
+                    published: true,
+                    user_id: users_list[idx].id,
+                    created_at: now,
+                })
+                .execute(&mut conn)
+                .await?;
+        }
+    }
+
+    let posts_for_users: Vec<Post> = Post::belonging_to(&users_list).load(&mut conn).await?;
+    let posts_grouped: Vec<Vec<Post>> = posts_for_users.grouped_by(&users_list);
+
+    assert_eq!(posts_grouped.len(), 2);
+    assert_eq!(posts_grouped[0].len(), 2);
+    assert_eq!(posts_grouped[1].len(), 1);
+
+    drop(conn);
+    Ok(())
+}
+
+// IS NULL / IS NOT NULL: filter by nullability of a Nullable<Text> column.
+#[tokio::test]
+async fn test_is_null_is_not_null() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(categories::table)
+        .values((
+            categories::name.eq("HasDesc"),
+            categories::description.eq(Some("Some text")),
+        ))
+        .execute(&mut conn)
+        .await?;
+    diesel::insert_into(categories::table)
+        .values((
+            categories::name.eq("NoDesc"),
+            categories::description.eq(None::<&str>),
+        ))
+        .execute(&mut conn)
+        .await?;
+
+    let with_desc: Vec<String> = categories::table
+        .filter(categories::description.is_not_null())
+        .select(categories::name)
+        .load(&mut conn)
+        .await?;
+    assert_eq!(with_desc, vec!["HasDesc"]);
+
+    let without_desc: Vec<String> = categories::table
+        .filter(categories::description.is_null())
+        .select(categories::name)
+        .load(&mut conn)
+        .await?;
+    assert_eq!(without_desc, vec!["NoDesc"]);
+
+    drop(conn);
+    Ok(())
+}
+
+#[derive(diesel::QueryableByName, Debug, PartialEq)]
+struct AvgRow {
+    #[diesel(sql_type = diesel::sql_types::Double)]
+    avg_rating: f64,
+}
+
+// AVG (via `sql_query` since diesel's typed `avg` requires the
+// `numeric`/`bigdecimal` feature) and COUNT DISTINCT (via diesel's typed
+// `count_distinct`).
+#[tokio::test]
+async fn test_avg_and_count_distinct() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("U"))
+        .execute(&mut conn)
+        .await?;
+    let user: User = users::table.first(&mut conn).await?;
+
+    diesel::insert_into(posts::table)
+        .values(&NewPost {
+            title: "P",
+            body: "x",
+            published: true,
+            user_id: user.id,
+            created_at: now,
+        })
+        .execute(&mut conn)
+        .await?;
+    let post: Post = posts::table.first(&mut conn).await?;
+
+    // ratings: 2, 4, 4, 6 → avg = 4.0, distinct = 3 (2, 4, 6)
+    for r in &[2, 4, 4, 6] {
+        diesel::insert_into(comments::table)
+            .values(&NewComment {
+                post_id: post.id,
+                user_id: user.id,
+                content: "c",
+                rating: Some(*r),
+            })
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let avg_rows: Vec<AvgRow> = diesel::sql_query("SELECT AVG(rating) AS avg_rating FROM comments")
+        .load(&mut conn)
+        .await?;
+    assert_eq!(avg_rows.len(), 1);
+    assert!(
+        (avg_rows[0].avg_rating - 4.0).abs() < f64::EPSILON,
+        "expected avg 4.0, got {}",
+        avg_rows[0].avg_rating
+    );
+
+    let distinct_count: i64 = comments::table
+        .select(diesel::dsl::count(comments::rating).aggregate_distinct())
+        .first(&mut conn)
+        .await?;
+    assert_eq!(distinct_count, 3);
+
+    drop(conn);
+    Ok(())
+}
+
+// INSERT INTO ... SELECT ... via `sql_query`. Diesel's typed DSL for
+// insert-from-select is awkward (requires column-shape adapters); raw SQL
+// is the natural shape and confirms turso supports the pattern.
+#[tokio::test]
+async fn test_insert_from_select() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    for n in &["A", "B", "C"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+
+    diesel::sql_query("INSERT INTO categories (name) SELECT name FROM users")
+        .execute(&mut conn)
+        .await?;
+
+    let cat_names: Vec<String> = categories::table
+        .select(categories::name)
+        .order(categories::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(cat_names, vec!["A", "B", "C"]);
 
     drop(conn);
     Ok(())
