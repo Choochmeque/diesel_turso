@@ -145,23 +145,20 @@ impl TursoConnection {
     pub async fn execute_batch(&self, stmt: &TursoPreparedStatement) -> Result<(), turso::Error> {
         // Batch SQL is multi-statement and not cacheable as a single
         // prepared statement.
-        self.conn.execute_batch(&stmt.sql).await?;
+        let result = self.conn.execute_batch(&stmt.sql).await;
 
-        // Batched SQL frequently carries DDL (CREATE/ALTER/DROP) that
-        // invalidates the schema-bound metadata of any cached prepared
-        // statement. Conservatively drop the cache contents on success so
-        // the next query re-prepares against the current schema. Only
-        // clear on success — if the batch errored we don't know what
-        // (if anything) actually applied, but leaving the cache as-is is
-        // no worse than before. The cache stays *enabled*; we only flush
-        // its entries.
+        // Clear the cache regardless of success: SQLite-style batch
+        // execution can partially apply earlier DDL (CREATE/ALTER/DROP)
+        // before a later statement errors, which can leave cached
+        // prepared statements bound to stale schema metadata. The cache
+        // stays *enabled*; we only flush its entries.
         self.cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entries
             .clear();
 
-        Ok(())
+        result
     }
 
     pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
