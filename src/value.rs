@@ -75,6 +75,14 @@ impl TursoValue {
         self.value.clone()
     }
 
+    /// Borrow the underlying turso `Value` so per-type `FromSql` impls can
+    /// dispatch on the on-disk storage class. `SQLite` (and turso) keep
+    /// dates/timestamps in any of TEXT, REAL (Julian), or INTEGER (Unix);
+    /// the chrono impls need to handle all three.
+    pub(crate) const fn raw(&self) -> &Value {
+        &self.value
+    }
+
     pub(crate) fn read_string(&self) -> deserialize::Result<String> {
         match &self.value {
             Value::Text(s) => Ok(s.clone()),
@@ -110,17 +118,6 @@ impl TursoValue {
         match &self.value {
             Value::Blob(b) => Ok(b.clone()),
             other => Err(format!("expected blob value, got {other:?}").into()),
-        }
-    }
-
-    #[cfg(feature = "chrono")]
-    pub(crate) fn parse_string<R>(
-        &self,
-        f: impl FnOnce(&str) -> deserialize::Result<R>,
-    ) -> deserialize::Result<R> {
-        match &self.value {
-            Value::Text(s) => f(s),
-            other => Err(format!("expected text value, got {other:?}").into()),
         }
     }
 

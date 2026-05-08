@@ -4,6 +4,7 @@ use diesel::backend::Backend;
 use diesel::deserialize::{self, FromSql};
 use diesel::serialize::{self, IsNull, Output, ToSql};
 use diesel::sql_types;
+use turso::Value;
 
 use self::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
@@ -77,10 +78,53 @@ fn parse_julian(julian_days: f64) -> Option<NaiveDateTime> {
     NaiveDateTime::from_timestamp_opt(seconds, nanos)
 }
 
+/// Decode a `NaiveDateTime` from any of the three `SQLite`/turso storage
+/// classes for date/time values:
+///
+/// - `TEXT`: ISO-8601 string in any of the formats listed in
+///   [`NAIVE_DATETIME_FORMATS`], or a Julian-day number serialised as text
+///   (this last form handles `julianday()` results that landed as TEXT).
+/// - `REAL`: a Julian-day number (matches `SQLite`'s `julianday()`).
+/// - `INTEGER`: a Unix timestamp in seconds (matches `SQLite`'s
+///   `unixepoch()` and `strftime('%s', …)`).
+///
+/// Used as the dispatch core for the `Date`, `Time`, and `Timestamp`
+/// `FromSql` impls — the date/time impls slice off the appropriate
+/// component of the resulting `NaiveDateTime`.
+fn decode_naive_datetime(value: &turso::Value) -> deserialize::Result<NaiveDateTime> {
+    match value {
+        Value::Text(text) => {
+            for format in NAIVE_DATETIME_FORMATS {
+                if let Ok(dt) = NaiveDateTime::parse_from_str(text, format) {
+                    return Ok(dt);
+                }
+            }
+            if let Ok(julian_days) = text.parse::<f64>() {
+                if let Some(dt) = parse_julian(julian_days) {
+                    return Ok(dt);
+                }
+            }
+            Err(format!("Invalid datetime {text}").into())
+        }
+        Value::Real(julian_days) => parse_julian(*julian_days)
+            .ok_or_else(|| format!("Invalid Julian day {julian_days}").into()),
+        Value::Integer(unix_seconds) => {
+            #[allow(deprecated)] // would need a higher chrono MSRV otherwise
+            NaiveDateTime::from_timestamp_opt(*unix_seconds, 0)
+                .ok_or_else(|| format!("Invalid Unix timestamp {unix_seconds}").into())
+        }
+        other => Err(format!("expected datetime value, got {other:?}").into()),
+    }
+}
+
 #[cfg(feature = "chrono")]
 impl FromSql<sql_types::Date, TursoBackend> for NaiveDate {
     fn from_sql(value: <TursoBackend as Backend>::RawValue<'_>) -> deserialize::Result<Self> {
-        value.parse_string(|s| Self::parse_from_str(s, DATE_FORMAT).map_err(Into::into))
+        match value.raw() {
+            Value::Text(text) => Self::parse_from_str(text, DATE_FORMAT).map_err(Into::into),
+            Value::Real(_) | Value::Integer(_) => Ok(decode_naive_datetime(value.raw())?.date()),
+            other => Err(format!("expected date value, got {other:?}").into()),
+        }
     }
 }
 
@@ -95,15 +139,18 @@ impl ToSql<sql_types::Date, TursoBackend> for NaiveDate {
 #[cfg(feature = "chrono")]
 impl FromSql<sql_types::Time, TursoBackend> for NaiveTime {
     fn from_sql(value: <TursoBackend as Backend>::RawValue<'_>) -> deserialize::Result<Self> {
-        value.parse_string(|text| {
-            for format in TIME_FORMATS {
-                if let Ok(time) = Self::parse_from_str(text, format) {
-                    return Ok(time);
+        match value.raw() {
+            Value::Text(text) => {
+                for format in TIME_FORMATS {
+                    if let Ok(time) = Self::parse_from_str(text, format) {
+                        return Ok(time);
+                    }
                 }
+                Err(format!("Invalid time {text}").into())
             }
-
-            Err(format!("Invalid time {text}").into())
-        })
+            Value::Real(_) | Value::Integer(_) => Ok(decode_naive_datetime(value.raw())?.time()),
+            other => Err(format!("expected time value, got {other:?}").into()),
+        }
     }
 }
 
@@ -118,21 +165,7 @@ impl ToSql<sql_types::Time, TursoBackend> for NaiveTime {
 #[cfg(feature = "chrono")]
 impl FromSql<sql_types::Timestamp, TursoBackend> for NaiveDateTime {
     fn from_sql(value: <TursoBackend as Backend>::RawValue<'_>) -> deserialize::Result<Self> {
-        value.parse_string(|text| {
-            for format in NAIVE_DATETIME_FORMATS {
-                if let Ok(dt) = Self::parse_from_str(text, format) {
-                    return Ok(dt);
-                }
-            }
-
-            if let Ok(julian_days) = text.parse::<f64>() {
-                if let Some(timestamp) = parse_julian(julian_days) {
-                    return Ok(timestamp);
-                }
-            }
-
-            Err(format!("Invalid datetime {text}").into())
-        })
+        decode_naive_datetime(value.raw())
     }
 }
 
@@ -207,6 +240,52 @@ mod tests {
             (400_000_000..1_000_000_000).contains(&nanos),
             "expected positive forward-from-floor nanos near 5e8 for ~0.5s \
              before epoch; got {nanos} (pre-fix the bug produced 0)",
+        );
+    }
+
+    // SQLite/turso return `julianday(…)` results as REAL and bare
+    // numeric literals (`SELECT 2440587.5`) as REAL. Decoding must
+    // dispatch on storage class, not just TEXT.
+    #[tokio::test]
+    async fn decodes_julian_day_stored_as_real() {
+        let mut connection = connection().await;
+        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+            .expect("1970-01-01 is a valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is a valid time");
+        // Unquoted → REAL storage class (vs `'2440587.5'` which is TEXT).
+        let query = select(sql::<Timestamp>("2440587.5"));
+        assert_eq!(
+            Ok(epoch),
+            query.get_result::<NaiveDateTime>(&mut connection).await
+        );
+    }
+
+    // SQLite/turso return `unixepoch(…)` results as INTEGER and bare
+    // integer literals (`SELECT 0`) as INTEGER. Decoding must dispatch
+    // on storage class, not just TEXT.
+    #[tokio::test]
+    async fn decodes_unix_seconds_stored_as_integer() {
+        let mut connection = connection().await;
+        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+            .expect("1970-01-01 is a valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is a valid time");
+        let query = select(sql::<Timestamp>("0"));
+        assert_eq!(
+            Ok(epoch),
+            query.get_result::<NaiveDateTime>(&mut connection).await
+        );
+
+        // Non-zero Unix timestamp: 2000-01-01 00:00:00 UTC = 946684800.
+        let y2k = NaiveDate::from_ymd_opt(2000, 1, 1)
+            .expect("2000-01-01 is a valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is a valid time");
+        let query = select(sql::<Timestamp>("946684800"));
+        assert_eq!(
+            Ok(y2k),
+            query.get_result::<NaiveDateTime>(&mut connection).await
         );
     }
 
