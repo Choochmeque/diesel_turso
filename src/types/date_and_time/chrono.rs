@@ -47,12 +47,32 @@ const NAIVE_DATETIME_FORMATS: [&str; 18] = [
 fn parse_julian(julian_days: f64) -> Option<NaiveDateTime> {
     const EPOCH_IN_JULIAN_DAYS: f64 = 2_440_587.5;
     const SECONDS_IN_DAY: f64 = 86400.0;
+    const NANOS_PER_SEC: u32 = 1_000_000_000;
     let timestamp = (julian_days - EPOCH_IN_JULIAN_DAYS) * SECONDS_IN_DAY;
-    #[allow(clippy::cast_possible_truncation)] // we want to truncate
-    let seconds = timestamp.trunc() as i64;
-    // that's not true, `fract` is always > 0
+
+    // `NaiveDateTime::from_timestamp_opt(secs, nanos)` requires `nanos`
+    // to be a forward offset in `[0, 1_000_000_000)` from `secs`, even
+    // when `secs` is negative. `f64::trunc` + `f64::fract` round toward
+    // zero and so produce a *negative* fractional part for pre-epoch
+    // timestamps (e.g. `-1.5` → `trunc=-1, fract=-0.5`), which then
+    // becomes `0` after `as u32` and yields the wrong instant.
+    //
+    // Use `floor` instead so the fractional remainder is always in
+    // `[0, 1)`, giving the canonical (`-2`, `500_000_000`) split for the
+    // same `-1.5s` case.
+    let secs_floor = timestamp.floor();
+    #[allow(clippy::cast_possible_truncation)]
+    let mut seconds = secs_floor as i64;
+    let frac = timestamp - secs_floor;
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let nanos = (timestamp.fract() * 1E9) as u32;
+    let mut nanos = (frac * f64::from(NANOS_PER_SEC)).round() as u32;
+    // Guard against rounding the fractional part up to a full second
+    // (e.g. `0.9999999999999999 * 1e9` → `1_000_000_000`).
+    if nanos >= NANOS_PER_SEC {
+        seconds = seconds.saturating_add(1);
+        nanos -= NANOS_PER_SEC;
+    }
+
     #[allow(deprecated)] // otherwise we would need to bump our minimal chrono version
     NaiveDateTime::from_timestamp_opt(seconds, nanos)
 }
@@ -142,6 +162,52 @@ mod tests {
         fn datetime(x: Text) -> Timestamp;
         fn time(x: Text) -> Time;
         fn date(x: Text) -> Date;
+    }
+
+    #[test]
+    fn parse_julian_round_trips_pre_and_post_epoch() {
+        // Unix epoch — anchor case.
+        let epoch = super::parse_julian(2_440_587.5).expect("epoch decodes");
+        assert_eq!(epoch.and_utc().timestamp(), 0);
+        assert_eq!(epoch.and_utc().timestamp_subsec_nanos(), 0);
+
+        // Pre-epoch: Julian day 0.0 ≈ -210866760000s = 4714 BC. Use a
+        // gentler pre-epoch value: 1900-01-01 = JD 2_415_020.5.
+        let pre_epoch = super::parse_julian(2_415_020.5).expect("1900-01-01 decodes");
+        let expected = NaiveDate::from_ymd_opt(1900, 1, 1)
+            .expect("date constructible")
+            .and_hms_opt(0, 0, 0)
+            .expect("time constructible");
+        assert_eq!(pre_epoch, expected);
+
+        // Pre-epoch with a sub-second component. JD with `.25` extra =
+        // +0.25 days = +6h. So 1900-01-01 06:00:00.
+        let pre_epoch_frac = super::parse_julian(2_415_020.75).expect("decodes");
+        let expected_frac = NaiveDate::from_ymd_opt(1900, 1, 1)
+            .expect("date constructible")
+            .and_hms_opt(6, 0, 0)
+            .expect("time constructible");
+        assert_eq!(pre_epoch_frac, expected_frac);
+
+        // Pre-epoch with a fractional second that exercises the
+        // negative-`fract`+`as u32` saturation bug specifically:
+        // JD = epoch − 0.5 / 86400 days ≈ 0.5s before epoch.
+        // (The exact half-second can't be represented as `f64` Julian-day
+        // arithmetic, so we test the structural invariants instead of an
+        // exact nanosecond match.)
+        let half_sec_before_epoch =
+            super::parse_julian(2_440_587.5 - 0.5 / 86_400.0).expect("0.5s before epoch decodes");
+        assert_eq!(half_sec_before_epoch.and_utc().timestamp(), -1);
+        let nanos = half_sec_before_epoch.and_utc().timestamp_subsec_nanos();
+        // Pre-fix this would have been 0 (negative `fract` × 1e9 cast to
+        // `u32` saturates to 0). Post-fix it's the canonical positive
+        // forward-from-floor remainder, somewhere near 5e8 ns for a
+        // ~0.5s offset.
+        assert!(
+            (400_000_000..1_000_000_000).contains(&nanos),
+            "expected positive forward-from-floor nanos near 5e8 for ~0.5s \
+             before epoch; got {nanos} (pre-fix the bug produced 0)",
+        );
     }
 
     #[tokio::test]
