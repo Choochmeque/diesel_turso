@@ -1,7 +1,9 @@
 use super::backend::TursoBackend;
 use super::AsyncTursoConnection;
 use diesel::prelude::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel::{JoinOnDsl, QueryResult, TextExpressionMethods};
+use diesel::{
+    BoolExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryResult, TextExpressionMethods,
+};
 use diesel_async::*;
 use std::fmt::Debug;
 
@@ -116,6 +118,8 @@ diesel::joinable!(post_categories -> posts (post_id));
 diesel::joinable!(post_categories -> categories (category_id));
 
 diesel::allow_tables_to_appear_in_same_query!(users, posts, comments, categories, post_categories,);
+
+diesel::alias!(posts as posts_p1: PostsP1, posts as posts_p2: PostsP2);
 
 #[derive(
     diesel::Queryable,
@@ -1076,6 +1080,212 @@ async fn test_transaction_constraint_violation_rolls_back() -> QueryResult<()> {
     assert_eq!(
         count, 0,
         "the pre-violation insert must have been rolled back"
+    );
+
+    drop(conn);
+    Ok(())
+}
+
+// LEFT JOIN with `.nullable()` projection — every user is returned even when
+// no matching post exists, with `Option<String>` for the post title.
+// Exercises the LEFT JOIN code path through the parenthesized-FROM flatten
+// because diesel often wraps the JOIN in parens during SQL generation.
+#[tokio::test]
+async fn test_left_join_with_nullable_projection() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("WithPosts"))
+        .execute(&mut conn)
+        .await?;
+    diesel::insert_into(users::table)
+        .values(users::name.eq("NoPosts"))
+        .execute(&mut conn)
+        .await?;
+    let users_list = users::table
+        .order(users::id.asc())
+        .load::<User>(&mut conn)
+        .await?;
+
+    diesel::insert_into(posts::table)
+        .values(&NewPost {
+            title: "Hello",
+            body: "World",
+            published: true,
+            user_id: users_list[0].id,
+            created_at: now,
+        })
+        .execute(&mut conn)
+        .await?;
+
+    let rows: Vec<(String, Option<String>)> = users::table
+        .left_join(posts::table)
+        .select((users::name, posts::title.nullable()))
+        .order(users::id.asc())
+        .load(&mut conn)
+        .await?;
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0],
+        ("WithPosts".to_string(), Some("Hello".to_string()))
+    );
+    assert_eq!(rows[1], ("NoPosts".to_string(), None));
+
+    drop(conn);
+    Ok(())
+}
+
+// Aggregate over a join: GROUP BY user with COUNT of joined posts. INNER JOIN
+// drops users with zero posts, so only users that actually have posts appear.
+#[tokio::test]
+async fn test_aggregate_over_join() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    for name in &["A", "B", "C"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(name))
+            .execute(&mut conn)
+            .await?;
+    }
+    let users_list = users::table
+        .order(users::id.asc())
+        .load::<User>(&mut conn)
+        .await?;
+
+    // A: 1 post, B: 3 posts, C: 0 posts.
+    let post_counts = [(0usize, 1), (1, 3)];
+    for (user_idx, count) in post_counts {
+        for i in 0..count {
+            diesel::insert_into(posts::table)
+                .values(&NewPost {
+                    title: &format!("post-{i}"),
+                    body: "x",
+                    published: true,
+                    user_id: users_list[user_idx].id,
+                    created_at: now,
+                })
+                .execute(&mut conn)
+                .await?;
+        }
+    }
+
+    let pairs: Vec<(String, i64)> = users::table
+        .inner_join(posts::table)
+        .group_by(users::id)
+        .select((users::name, diesel::dsl::count(posts::id)))
+        .order(users::id.asc())
+        .load(&mut conn)
+        .await?;
+
+    assert_eq!(pairs.len(), 2, "C has no posts and should not appear");
+    assert_eq!(pairs[0], ("A".to_string(), 1));
+    assert_eq!(pairs[1], ("B".to_string(), 3));
+
+    drop(conn);
+    Ok(())
+}
+
+// Self-join: pairs of posts by the same author with `p1.id < p2.id`.
+// 3 posts by one user → 3 unique unordered pairs.
+#[tokio::test]
+async fn test_self_join() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("Author"))
+        .execute(&mut conn)
+        .await?;
+    let user = users::table.first::<User>(&mut conn).await?;
+
+    for i in 1..=3 {
+        diesel::insert_into(posts::table)
+            .values(&NewPost {
+                title: &format!("Post{i}"),
+                body: "x",
+                published: true,
+                user_id: user.id,
+                created_at: now,
+            })
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let pairs: Vec<(i32, i32)> = posts_p1
+        .inner_join(
+            posts_p2.on(posts_p1
+                .field(posts::user_id)
+                .eq(posts_p2.field(posts::user_id))
+                .and(posts_p1.field(posts::id).lt(posts_p2.field(posts::id)))),
+        )
+        .select((posts_p1.field(posts::id), posts_p2.field(posts::id)))
+        .order((
+            posts_p1.field(posts::id).asc(),
+            posts_p2.field(posts::id).asc(),
+        ))
+        .load(&mut conn)
+        .await?;
+
+    assert_eq!(pairs.len(), 3, "expected C(3,2) = 3 unordered pairs");
+    let posts_in_pairs: Vec<i32> = pairs.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    assert!(posts_in_pairs.iter().all(|&id| (1..=3).contains(&id)));
+
+    drop(conn);
+    Ok(())
+}
+
+// Multi-condition ON: the join constraint combines an FK match with a
+// row-level predicate (rating > 3) using `.and(...)`. Comments with low
+// or NULL ratings must not appear in the result.
+#[tokio::test]
+async fn test_join_with_multi_condition_on() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("Reviewer"))
+        .execute(&mut conn)
+        .await?;
+    let user = users::table.first::<User>(&mut conn).await?;
+
+    diesel::insert_into(posts::table)
+        .values(&NewPost {
+            title: "P",
+            body: "x",
+            published: true,
+            user_id: user.id,
+            created_at: now,
+        })
+        .execute(&mut conn)
+        .await?;
+    let post = posts::table.first::<Post>(&mut conn).await?;
+
+    let comments_data = [("Excellent", Some(5)), ("Mid", Some(3)), ("Unrated", None)];
+    for (content, rating) in comments_data {
+        diesel::insert_into(comments::table)
+            .values(&NewComment {
+                post_id: post.id,
+                user_id: user.id,
+                content,
+                rating,
+            })
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let high_rated: Vec<(String, String)> = comments::table
+        .inner_join(users::table.on(comments::user_id.eq(users::id).and(comments::rating.gt(3))))
+        .select((comments::content, users::name))
+        .load(&mut conn)
+        .await?;
+
+    assert_eq!(high_rated.len(), 1, "only rating > 3 should match");
+    assert_eq!(
+        high_rated[0],
+        ("Excellent".to_string(), "Reviewer".to_string())
     );
 
     drop(conn);
