@@ -1,8 +1,5 @@
 use diesel::{
-    backend::{
-        sql_dialect::{self, returning_clause::DoesNotSupportReturningClause},
-        Backend, DieselReserveSpecialization, SqlDialect, TrustedBackend,
-    },
+    backend::{sql_dialect, Backend, DieselReserveSpecialization, SqlDialect, TrustedBackend},
     sql_types::TypeMetadata,
 };
 
@@ -44,8 +41,7 @@ impl TypeMetadata for TursoBackend {
 }
 
 impl SqlDialect for TursoBackend {
-    // this is actually not true, but i would need to properly implement the ast for this, since the sqlite one is not exported
-    type ReturningClause = DoesNotSupportReturningClause;
+    type ReturningClause = SqliteReturningClause;
 
     type OnConflictClause = SqliteOnConflictClause;
 

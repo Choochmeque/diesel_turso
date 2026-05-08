@@ -1779,6 +1779,44 @@ struct IntRow {
     _val: i32,
 }
 
+// `RETURNING` is supported by turso (and SQLite ≥ 3.35); the backend dialect
+// declares `SqliteReturningClause` so diesel emits the clause and this whole
+// round-trip works through the typed `.returning(...)` DSL.
+#[tokio::test]
+async fn test_returning_insert_update_delete() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    // INSERT ... RETURNING
+    let inserted: (i32, String) = diesel::insert_into(users::table)
+        .values(users::name.eq("Alice"))
+        .returning((users::id, users::name))
+        .get_result(&mut conn)
+        .await?;
+    assert_eq!(inserted.1, "Alice");
+    let alice_id = inserted.0;
+
+    // UPDATE ... RETURNING
+    let updated_name: String = diesel::update(users::table.filter(users::id.eq(alice_id)))
+        .set(users::name.eq("Updated"))
+        .returning(users::name)
+        .get_result(&mut conn)
+        .await?;
+    assert_eq!(updated_name, "Updated");
+
+    // DELETE ... RETURNING
+    let deleted_id: i32 = diesel::delete(users::table.filter(users::id.eq(alice_id)))
+        .returning(users::id)
+        .get_result(&mut conn)
+        .await?;
+    assert_eq!(deleted_id, alice_id);
+
+    let count: i64 = users::table.count().get_result(&mut conn).await?;
+    assert_eq!(count, 0, "row was deleted by the RETURNING DELETE above");
+
+    drop(conn);
+    Ok(())
+}
+
 // FromSql must return `QueryResult::Err` on type mismatch instead of panicking.
 // SQLite/turso has dynamic typing — a column declared TEXT can be queried back
 // through an `Integer` SQL type via a raw SELECT, exercising the read_*
