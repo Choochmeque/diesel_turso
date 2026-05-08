@@ -1957,6 +1957,20 @@ async fn test_type_mismatch_returns_err_not_panic() -> QueryResult<()> {
     Ok(())
 }
 
+// `CacheSize` is `#[non_exhaustive]` upstream, so the mapping in
+// `cache_size_enabled` must keep both known variants pinned and default
+// any future variant to "enabled" (rather than silently disabling the
+// cache on a diesel upgrade).
+#[test]
+fn cache_size_unbounded_enables_cache() {
+    assert!(super::cache_size_enabled(CacheSize::Unbounded));
+}
+
+#[test]
+fn cache_size_disabled_disables_cache() {
+    assert!(!super::cache_size_enabled(CacheSize::Disabled));
+}
+
 // `set_prepared_statement_cache_size` must be a real configuration knob, not
 // a runtime panic. Verify both modes round-trip the same query results.
 //

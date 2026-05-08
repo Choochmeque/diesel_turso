@@ -218,13 +218,33 @@ impl AsyncConnection for AsyncTursoConnection {
 
     #[doc = " Set the prepared statement cache size to [`CacheSize`] for this connection"]
     fn set_prepared_statement_cache_size(&mut self, size: CacheSize) {
-        // turso's bindings don't expose a bounded LRU; map diesel's two
-        // settings to enable/disable.
-        let enabled = matches!(size, CacheSize::Unbounded);
+        let enabled = cache_size_enabled(size);
         self.cache_enabled = enabled;
         if let Some(conn) = self.connection.as_ref() {
             conn.set_cache_enabled(enabled);
         }
+    }
+}
+
+/// Map diesel's [`CacheSize`] onto turso's enable/disable knob. turso's
+/// bindings don't expose a bounded LRU, so we collapse the diesel knob to
+/// a boolean.
+///
+/// `CacheSize` is `#[non_exhaustive]`. Any future variant
+/// (e.g. a bounded `Bounded(n)`) hits the wildcard arm and falls back to
+/// `Unbounded`'s behaviour — diesel's default when this method is never
+/// called. Defaulting unknown variants to *enabled* keeps a diesel
+/// upgrade from silently turning the cache off.
+// The wildcard arm intentionally mirrors `Unbounded` — see the doc comment
+// above. Silencing `match_same_arms` keeps the three arms visible in source
+// instead of collapsing to `_ => true`, where the forward-compat intent
+// would disappear.
+#[allow(clippy::match_same_arms)]
+const fn cache_size_enabled(size: CacheSize) -> bool {
+    match size {
+        CacheSize::Unbounded => true,
+        CacheSize::Disabled => false,
+        _ => true,
     }
 }
 
