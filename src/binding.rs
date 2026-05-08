@@ -42,8 +42,6 @@ pub struct TursoPreparedStatement {
 
 #[derive(Debug, Clone)]
 pub struct TursoResult {
-    pub column_names: Arc<[String]>,
-    pub rows: Vec<Vec<Value>>,
     pub changes: usize,
 }
 
@@ -128,25 +126,18 @@ impl TursoConnection {
         // every row in memory.
         if !prepared.columns().is_empty() {
             let changes = Self::drain_rows(prepared, stmt.binds.clone()).await?;
-            return Ok(TursoResult {
-                column_names: Arc::from([]),
-                rows: Vec::new(),
-                changes,
-            });
+            return Ok(TursoResult { changes });
         }
 
         let params: Vec<Value> = stmt.binds.clone();
         let rows_affected = prepared.execute(params).await?;
 
-        Ok(TursoResult {
-            column_names: Arc::from([]),
-            rows: Vec::new(),
-            changes: usize::try_from(rows_affected).map_err(|_| {
-                turso::Error::ConversionFailure(format!(
-                    "rows_affected ({rows_affected}) exceeds usize::MAX"
-                ))
-            })?,
-        })
+        let changes = usize::try_from(rows_affected).map_err(|_| {
+            turso::Error::ConversionFailure(format!(
+                "rows_affected ({rows_affected}) exceeds usize::MAX"
+            ))
+        })?;
+        Ok(TursoResult { changes })
     }
 
     pub async fn execute_batch(&self, stmt: &TursoPreparedStatement) -> Result<(), turso::Error> {
@@ -157,9 +148,24 @@ impl TursoConnection {
         self.conn.execute_batch(&stmt.sql).await
     }
 
-    pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
-        let prepared = self.prepare_one(&stmt.sql, stmt.cacheable).await?;
-        Self::step_rows(prepared, stmt.binds.clone()).await
+    /// Open a live row iterator for `stmt`, returning the iterator and
+    /// the resolved column names. Used by `load()` to back
+    /// diesel-async's `Stream` associated type with a lazy stream
+    /// (`stream::unfold` over `turso::Rows`) rather than a buffered
+    /// `Vec` — large `SELECT`s no longer have to materialize the full
+    /// result set up front.
+    pub async fn open_stream(
+        &self,
+        stmt: &TursoPreparedStatement,
+    ) -> Result<(turso::Rows, Arc<[String]>), turso::Error> {
+        let mut prepared = self.prepare_one(&stmt.sql, stmt.cacheable).await?;
+        let column_names: Arc<[String]> = prepared
+            .columns()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        let rows = prepared.query(stmt.binds.clone()).await?;
+        Ok((rows, column_names))
     }
 
     /// Step through a prepared row-producing statement to completion,
@@ -176,46 +182,6 @@ impl TursoConnection {
         let changes = prepared.n_change();
         usize::try_from(changes).map_err(|_| {
             turso::Error::ConversionFailure(format!("rows_affected ({changes}) exceeds usize::MAX"))
-        })
-    }
-
-    /// Step through a prepared row-producing statement and assemble a
-    /// `TursoResult`. Used by `query()` (the load path) where the caller
-    /// actually consumes rows.
-    async fn step_rows(
-        mut prepared: Statement,
-        params: Vec<Value>,
-    ) -> Result<TursoResult, turso::Error> {
-        let mut rows_iter = prepared.query(params).await?;
-        let column_names: Arc<[String]> = prepared
-            .columns()
-            .iter()
-            .map(|c| c.name().to_string())
-            .collect();
-        let column_count = column_names.len();
-
-        let mut rows = Vec::new();
-        while let Some(row) = rows_iter.next().await? {
-            let row_data: Vec<Value> = (0..column_count)
-                .map(|idx| row.get_value(idx))
-                .collect::<Result<_, _>>()?;
-            rows.push(row_data);
-        }
-
-        // Capture rows-affected after stepping. `Statement::n_change()` is
-        // 0 for plain SELECTs (so this is correct for `load()`), and for
-        // INSERT/UPDATE/DELETE … RETURNING — which `execute()` re-routes
-        // here — it reports the actual mutation count rather than 0.
-        let changes = prepared.n_change();
-
-        Ok(TursoResult {
-            column_names,
-            rows,
-            changes: usize::try_from(changes).map_err(|_| {
-                turso::Error::ConversionFailure(format!(
-                    "rows_affected ({changes}) exceeds usize::MAX"
-                ))
-            })?,
         })
     }
 

@@ -1906,46 +1906,59 @@ async fn test_returning_insert_update_delete() -> QueryResult<()> {
     Ok(())
 }
 
-// `.execute()` on a column-producing statement (e.g. `RETURNING *`) must
-// drain rows without materializing them — the caller only consumes
-// `changes`. Drive `UPDATE … RETURNING *` through the binding-level
-// `TursoConnection::execute` and assert the returned `TursoResult` has
-// no rows/column_names (proxy for "didn't buffer the result set").
+// `load()` must back diesel-async's `Stream` associated type with a lazy
+// row iterator (`stream::unfold` over `turso::Rows`), not a buffered
+// `Vec`. This test exercises the streaming entry point — `load_stream`
+// — pulling rows one `next().await` at a time, then drops the stream
+// after a partial drain. Two properties under test:
+//
+//   1. Rows arrive incrementally through the `Stream` impl (with the
+//      previous buffered impl this still works, but each `next()` was a
+//      `Vec::pop` rather than a real `Statement::step` — the test
+//      doesn't *prove* laziness from outside, but it pins the contract
+//      shape that `load_stream` returns a working stream).
+//   2. Dropping the stream mid-iteration leaves the connection usable —
+//      a regression here would mean the partial drain leaks the live
+//      `Statement` / `Rows` and blocks the next query.
 #[tokio::test]
-async fn test_execute_on_returning_does_not_materialize_rows() -> QueryResult<()> {
+async fn test_load_streams_rows_and_partial_drain_is_safe() -> QueryResult<()> {
+    use futures_util::StreamExt;
+
     let mut conn = connection().await;
 
-    for i in 0..10 {
+    for i in 0..50 {
         diesel::insert_into(users::table)
-            .values(users::name.eq(format!("drain-{i}")))
+            .values(users::name.eq(format!("stream-{i:02}")))
             .execute(&mut conn)
             .await?;
     }
 
-    // Reach into the binding layer to observe what `execute()` produced
-    // before diesel-async strips it down to `changes`.
-    let raw = conn
-        .connection
-        .as_ref()
-        .expect("turso connection initialized");
-    let mut stmt = raw.prepare("UPDATE users SET name = 'X' RETURNING id, name");
-    stmt.bind(Vec::new());
-    let result = raw
-        .execute(&stmt)
-        .await
-        .expect("UPDATE … RETURNING via execute()");
+    let mut taken = 0;
+    {
+        let mut stream = users::table.load_stream::<User>(&mut conn).await?;
+        for _ in 0..3 {
+            let row = stream.next().await.expect("stream yields a row")?;
+            assert!(row.name.starts_with("stream-"));
+            taken += 1;
+        }
+        // stream dropped here — partial drain.
+    }
+    assert_eq!(taken, 3);
 
-    assert_eq!(result.changes, 10, "should report 10 rows updated");
-    assert!(
-        result.rows.is_empty(),
-        "execute() must not materialize rows from RETURNING; got {} rows",
-        result.rows.len(),
-    );
-    assert!(
-        result.column_names.is_empty(),
-        "execute() must not propagate columns from RETURNING; got {:?}",
-        result.column_names,
-    );
+    // Connection must still be usable after dropping a partial stream.
+    let count: i64 = users::table.count().get_result(&mut conn).await?;
+    assert_eq!(count, 50);
+
+    // And we can open another stream and fully drain it.
+    let mut full = 0;
+    {
+        let mut stream = users::table.load_stream::<User>(&mut conn).await?;
+        while let Some(row) = stream.next().await {
+            row?;
+            full += 1;
+        }
+    }
+    assert_eq!(full, 50);
 
     drop(conn);
     Ok(())

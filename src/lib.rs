@@ -135,12 +135,12 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                     &sql,
                 )));
 
-            let result = async {
+            let opened = async {
                 let conn = self.ensure_connection().await?;
                 let mut stmt = conn.prepare(&sql);
                 stmt.bind(binds);
                 stmt.set_cacheable(cacheable);
-                conn.query(&stmt).await.map_err(|e| {
+                conn.open_stream(&stmt).await.map_err(|e| {
                     diesel::result::Error::DatabaseError(
                         diesel::result::DatabaseErrorKind::Unknown,
                         Box::new(TursoError {
@@ -151,23 +151,63 @@ impl AsyncConnectionCore for AsyncTursoConnection {
             }
             .await;
 
+            // The instrumented "query" spans `prepare` + `open` — the row
+            // stream that follows pulls lazily on consumer demand. Most
+            // diesel-async drivers emit finish_query the same way (around
+            // the open, not around full drain) since "query duration" for
+            // a streaming load isn't well-defined.
             self.instrumentation()
                 .on_connection_event(InstrumentationEvent::finish_query(
                     &StrQueryHelper::new(&sql),
-                    result.as_ref().err(),
+                    opened.as_ref().err(),
                 ));
 
-            let result = result?;
-            let column_names = result.column_names;
-            let rows: Vec<QueryResult<TursoRow>> = result
-                .rows
-                .into_iter()
-                .map(|values| {
-                    TursoRow::from_turso_values(values, column_names.clone())
-                        .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))
-                })
-                .collect();
-            Ok(stream::iter(rows).boxed())
+            let (rows_iter, column_names) = opened?;
+
+            let stream = stream::unfold(Some((rows_iter, column_names)), |state| async move {
+                let (mut rows_iter, column_names) = state?;
+                match rows_iter.next().await {
+                    Ok(None) => None,
+                    Err(e) => Some((
+                        Err(diesel::result::Error::DatabaseError(
+                            diesel::result::DatabaseErrorKind::Unknown,
+                            Box::new(TursoError {
+                                message: e.to_string(),
+                            }),
+                        )),
+                        None,
+                    )),
+                    Ok(Some(row)) => {
+                        let column_count = column_names.len();
+                        let mut values = Vec::with_capacity(column_count);
+                        for idx in 0..column_count {
+                            match row.get_value(idx) {
+                                Ok(v) => values.push(v),
+                                Err(e) => {
+                                    return Some((
+                                        Err(diesel::result::Error::DatabaseError(
+                                            diesel::result::DatabaseErrorKind::Unknown,
+                                            Box::new(TursoError {
+                                                message: e.to_string(),
+                                            }),
+                                        )),
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                        let item = TursoRow::from_turso_values(values, column_names.clone())
+                            .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)));
+                        let next_state = match &item {
+                            Ok(_) => Some((rows_iter, column_names)),
+                            Err(_) => None,
+                        };
+                        Some((item, next_state))
+                    }
+                }
+            });
+
+            Ok(stream.boxed())
         }
         .boxed()
     }
