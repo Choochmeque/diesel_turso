@@ -249,7 +249,21 @@ impl AsyncConnection for AsyncTursoConnection {
 
     #[doc = " Set the prepared statement cache size to [`CacheSize`] for this connection"]
     fn set_prepared_statement_cache_size(&mut self, size: CacheSize) {
-        let enabled = cache_size_enabled(size);
+        let enabled = cache_size_enabled(size).unwrap_or_else(|| {
+            // `CacheSize` is `#[non_exhaustive]`. We can't return an
+            // error from this trait method, so we default the unknown
+            // variant to enabled (matches diesel's `Unbounded` default
+            // and is the least-surprising behaviour). Surface the
+            // fallback through instrumentation so the silent default is
+            // at least observable to anyone with logging on. Use
+            // `cache_query` since it's the closest semantic fit
+            // (cache-related event).
+            self.instrumentation()
+                .on_connection_event(InstrumentationEvent::cache_query(
+                    "[diesel-turso] unrecognized CacheSize variant; treating as Unbounded",
+                ));
+            true
+        });
         self.cache_enabled = enabled;
         if let Some(conn) = self.connection.as_ref() {
             conn.set_cache_enabled(enabled);
@@ -261,21 +275,15 @@ impl AsyncConnection for AsyncTursoConnection {
 /// bindings don't expose a bounded LRU, so we collapse the diesel knob to
 /// a boolean.
 ///
-/// `CacheSize` is `#[non_exhaustive]`. Any future variant
-/// (e.g. a bounded `Bounded(n)`) hits the wildcard arm and falls back to
-/// `Unbounded`'s behaviour — diesel's default when this method is never
-/// called. Defaulting unknown variants to *enabled* keeps a diesel
-/// upgrade from silently turning the cache off.
-// The wildcard arm intentionally mirrors `Unbounded` — see the doc comment
-// above. Silencing `match_same_arms` keeps the three arms visible in source
-// instead of collapsing to `_ => true`, where the forward-compat intent
-// would disappear.
-#[allow(clippy::match_same_arms)]
-const fn cache_size_enabled(size: CacheSize) -> bool {
+/// `CacheSize` is `#[non_exhaustive]`. Returns `None` for any future
+/// variant so the caller can decide how to surface the fallback (we emit
+/// an instrumentation event in `set_prepared_statement_cache_size` and
+/// then default to enabled, matching diesel's `Unbounded` default).
+const fn cache_size_enabled(size: CacheSize) -> Option<bool> {
     match size {
-        CacheSize::Unbounded => true,
-        CacheSize::Disabled => false,
-        _ => true,
+        CacheSize::Unbounded => Some(true),
+        CacheSize::Disabled => Some(false),
+        _ => None,
     }
 }
 
