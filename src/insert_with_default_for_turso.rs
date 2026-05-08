@@ -259,26 +259,40 @@ where
 
         Box::pin(async move {
             let prepared = prepared?;
-            let mut total = 0usize;
-            for (sql, binds) in prepared {
-                let inner = conn.ensure_connection()?;
-                let mut prep = inner.prepare(&sql);
-                prep.bind(binds);
-                // Each per-row SQL is unique-ish (default columns vary)
-                // and we already paid the prepare cost above — no point
-                // populating turso's cache for these.
-                prep.set_cacheable(false);
-                let result = inner.execute(&prep).await.map_err(|e| {
-                    diesel::result::Error::DatabaseError(
-                        diesel::result::DatabaseErrorKind::Unknown,
-                        Box::new(crate::utils::TursoError {
-                            message: e.to_string(),
-                        }),
-                    )
-                })?;
-                total += result.changes;
-            }
-            Ok(total)
+            // Wrap the per-row inserts in a transaction so the batch is
+            // statement-atomic — same failure semantics as a single
+            // multi-row INSERT. Without this, a partial failure
+            // (row 1 succeeds, row 2 errors) would leave row 1
+            // committed. `AsyncConnection::transaction` issues a
+            // `BEGIN`/`SAVEPOINT` automatically depending on nesting
+            // depth and rolls back on any propagated error.
+            <AsyncTursoConnection as diesel_async::AsyncConnection>::transaction::<
+                usize,
+                diesel::result::Error,
+                _,
+            >(conn, async move |conn| {
+                let mut total = 0usize;
+                for (sql, binds) in prepared {
+                    let inner = conn.ensure_connection()?;
+                    let mut prep = inner.prepare(&sql);
+                    prep.bind(binds);
+                    // Each per-row SQL is unique-ish (default columns
+                    // vary) and we already paid the prepare cost above
+                    // — no point populating turso's cache for these.
+                    prep.set_cacheable(false);
+                    let result = inner.execute(&prep).await.map_err(|e| {
+                        diesel::result::Error::DatabaseError(
+                            diesel::result::DatabaseErrorKind::Unknown,
+                            Box::new(crate::utils::TursoError {
+                                message: e.to_string(),
+                            }),
+                        )
+                    })?;
+                    total += result.changes;
+                }
+                Ok(total)
+            })
+            .await
         })
     }
 }

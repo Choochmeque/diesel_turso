@@ -982,6 +982,69 @@ async fn test_batch_insert_empty_batch() -> QueryResult<()> {
     Ok(())
 }
 
+// Defaultable batch insert must be statement-atomic. The `(Yes, …)`
+// path emits one INSERT per row; if row 2 fails, row 1 must roll back
+// too — same failure semantics as a single multi-row INSERT.
+//
+// We bypass `begin_test_transaction` here because `PRAGMA foreign_keys =
+// ON` only takes effect outside an active transaction, and we need FK
+// enforcement to make row 2 fail.
+#[tokio::test]
+async fn test_batch_insert_with_default_values_atomic_on_failure() -> QueryResult<()> {
+    let mut conn = connection_without_transaction().await;
+    setup(&mut conn).await;
+
+    diesel::sql_query("PRAGMA foreign_keys = ON")
+        .execute(&mut conn)
+        .await?;
+
+    let author_id = diesel::insert_into(users::table)
+        .values(users::name.eq("AtomicAuthor"))
+        .returning(users::id)
+        .get_result::<i32>(&mut conn)
+        .await?;
+
+    let baseline_posts: i64 = posts::table.count().get_result(&mut conn).await?;
+
+    let now = chrono::Utc::now().naive_utc();
+    let rows = vec![
+        // Valid row, omits the defaultable column.
+        NewPostMaybePublished {
+            title: "atomic-valid",
+            body: "body",
+            published: None,
+            user_id: author_id,
+            created_at: now,
+        },
+        // Invalid row: nonexistent user_id → FK violation on the
+        // second per-row INSERT inside the `(Yes, …)` loop.
+        NewPostMaybePublished {
+            title: "atomic-invalid",
+            body: "body",
+            published: Some(true),
+            user_id: 9_999_999,
+            created_at: now,
+        },
+    ];
+
+    let result = diesel::insert_into(posts::table)
+        .values(&rows)
+        .execute(&mut conn)
+        .await;
+    assert!(result.is_err(), "FK violation should fail the batch");
+
+    // Atomicity: row 1 must NOT have stuck around.
+    let after_posts: i64 = posts::table.count().get_result(&mut conn).await?;
+    assert_eq!(
+        after_posts, baseline_posts,
+        "defaultable batch insert must be atomic; partial success was committed: {} → {}",
+        baseline_posts, after_posts,
+    );
+
+    drop(conn);
+    Ok(())
+}
+
 // Defaultable insert combined with `.returning(...)`. Each row in a
 // defaultable batch gets its own per-row INSERT (via the `(Yes, …)`
 // path), so RETURNING must work on each one and surface the
