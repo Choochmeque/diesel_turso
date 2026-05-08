@@ -31,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUST_LOG: debug
-      DATABASE_URL: ":memory:"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

@@ -10,7 +10,8 @@ async fn save_changes_bb8() {
     use diesel_async::pooled_connection::bb8::Pool;
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_path = super::test_db_path();
+    let db_url = db_path.to_str().expect("temp DB path is UTF-8").to_string();
 
     let config = AsyncDieselConnectionManager::<super::TestConnection>::new(db_url);
     let pool = Pool::builder()
@@ -43,7 +44,8 @@ async fn save_changes_deadpool() {
     use diesel_async::pooled_connection::deadpool::Pool;
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_path = super::test_db_path();
+    let db_url = db_path.to_str().expect("temp DB path is UTF-8").to_string();
 
     let config = AsyncDieselConnectionManager::<super::TestConnection>::new(db_url);
     let pool = Pool::builder(config)
@@ -75,7 +77,8 @@ async fn save_changes_mobc() {
     use diesel_async::pooled_connection::mobc::Pool;
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_path = super::test_db_path();
+    let db_url = db_path.to_str().expect("temp DB path is UTF-8").to_string();
 
     let pool = Pool::new(AsyncDieselConnectionManager::<super::TestConnection>::new(
         db_url,
@@ -111,7 +114,8 @@ async fn save_changes_r2d2() {
 
     type AsyncWrapper = AsyncConnectionWrapper<super::TestConnection>;
 
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_path = super::test_db_path();
+    let db_url = db_path.to_str().expect("temp DB path is UTF-8").to_string();
 
     let config: ConnectionManager<AsyncWrapper> = ConnectionManager::new(&db_url);
     let pool = Pool::builder().build(config).expect("build r2d2 pool");

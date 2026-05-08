@@ -329,10 +329,37 @@ pub async fn connection() -> TestConnection {
 }
 
 async fn connection_without_transaction() -> TestConnection {
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    TestConnection::establish(&db_url)
+    let path = test_db_path();
+    TestConnection::establish(path.to_str().expect("temp DB path is UTF-8"))
         .await
         .expect("establish turso connection")
+}
+
+/// Allocate a unique on-disk database file under a per-process tempdir.
+///
+/// Tests run in parallel and each one calls `setup()` (DDL) before
+/// `begin_test_transaction`. A shared file-backed DB therefore races
+/// across tests and produces failures like
+/// `Parse error: table "users" already exists` (concurrent CREATE) or
+/// `Busy("database is locked")` (concurrent writers).
+///
+/// We give every test its own file so isolation is automatic — no
+/// DELETE-FROM dance, no env-var setup, no race. The shared `TempDir`
+/// lives in a `OnceLock` for the duration of the process; the OS reaps
+/// `/tmp` between runs.
+fn test_db_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = TEST_DIR.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("diesel-turso-tests-")
+            .tempdir()
+            .expect("create test tempdir")
+    });
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.path().join(format!("test-{n}.db"))
 }
 
 #[tokio::test]

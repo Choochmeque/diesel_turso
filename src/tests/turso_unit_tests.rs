@@ -72,32 +72,23 @@ async fn setup(connection: &Connection) {
 }
 
 async fn connection() -> Connection {
+    // `connection_without_transaction()` returns a brand-new on-disk DB
+    // per call (see `super::test_db_path`), so isolation is automatic:
+    // tables are empty after `setup()` and there's no need for a
+    // DELETE-FROM dance or a wrapping transaction. Raw turso has no
+    // analogue of diesel-async's `begin_test_transaction`, but with a
+    // fresh DB it's not needed.
     let conn = connection_without_transaction().await;
     setup(&conn).await;
-    // Raw turso connections don't have an analogue of diesel-async's
-    // `begin_test_transaction`. With `:memory:` each connection has its own
-    // DB so this is a no-op; with a file-backed `DATABASE_URL` it clears
-    // any rows left over by previously-run tests so each test starts from
-    // an empty schema. Order respects FK relationships (children first)
-    // even though FK enforcement is off by default — keeps the helper
-    // robust if a test later flips `PRAGMA foreign_keys = ON`.
-    for table in &[
-        "post_categories",
-        "comments",
-        "posts",
-        "categories",
-        "users",
-    ] {
-        conn.execute(&format!("DELETE FROM {table}"), Vec::<Value>::new())
-            .await
-            .expect("clear table between tests");
-    }
     conn
 }
 
 async fn connection_without_transaction() -> Connection {
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let db = Builder::new_local(&db_url)
+    // Each test gets its own DB file under a per-process tempdir — see
+    // `super::test_db_path` for the rationale (concurrent tests against a
+    // shared file-backed DB race on CREATE TABLE and on the file lock).
+    let path = super::test_db_path();
+    let db = Builder::new_local(path.to_str().expect("temp DB path is UTF-8"))
         .build()
         .await
         .expect("build turso database");
