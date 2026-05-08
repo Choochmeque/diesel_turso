@@ -74,6 +74,24 @@ async fn setup(connection: &Connection) {
 async fn connection() -> Connection {
     let conn = connection_without_transaction().await;
     setup(&conn).await;
+    // Raw turso connections don't have an analogue of diesel-async's
+    // `begin_test_transaction`. With `:memory:` each connection has its own
+    // DB so this is a no-op; with a file-backed `DATABASE_URL` it clears
+    // any rows left over by previously-run tests so each test starts from
+    // an empty schema. Order respects FK relationships (children first)
+    // even though FK enforcement is off by default — keeps the helper
+    // robust if a test later flips `PRAGMA foreign_keys = ON`.
+    for table in &[
+        "post_categories",
+        "comments",
+        "posts",
+        "categories",
+        "users",
+    ] {
+        conn.execute(&format!("DELETE FROM {table}"), Vec::<Value>::new())
+            .await
+            .expect("clear table between tests");
+    }
     conn
 }
 

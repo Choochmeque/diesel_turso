@@ -246,9 +246,16 @@ async fn test_basic_insert_and_load() -> QueryResult<()> {
     Ok(())
 }
 
+// Schema setup runs *before* `begin_test_transaction`, so the CREATEs are
+// auto-committed and persist across tests on a shared `DATABASE_URL`. With
+// `:memory:` each connection has its own DB and the question is moot, but
+// running the same suite against a file-backed `DATABASE_URL` (or a single
+// shared turso instance) requires every table to be idempotent — hence
+// `CREATE TABLE IF NOT EXISTS`. This matches the convention in
+// `turso_unit_tests.rs::setup` and brings the diesel-side suite in line.
 async fn setup(connection: &mut TestConnection) {
     diesel::sql_query(
-        "CREATE TABLE users (
+        "CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL
             )",
@@ -258,7 +265,7 @@ async fn setup(connection: &mut TestConnection) {
     .expect("create users table");
 
     diesel::sql_query(
-        "CREATE TABLE posts (
+        "CREATE TABLE IF NOT EXISTS posts (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
                 body TEXT NOT NULL,
@@ -273,7 +280,7 @@ async fn setup(connection: &mut TestConnection) {
     .expect("create posts table");
 
     diesel::sql_query(
-        "CREATE TABLE comments (
+        "CREATE TABLE IF NOT EXISTS comments (
                 id INTEGER PRIMARY KEY,
                 post_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -288,7 +295,7 @@ async fn setup(connection: &mut TestConnection) {
     .expect("create comments table");
 
     diesel::sql_query(
-        "CREATE TABLE categories (
+        "CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT
@@ -299,7 +306,7 @@ async fn setup(connection: &mut TestConnection) {
     .expect("create categories table");
 
     diesel::sql_query(
-        "CREATE TABLE post_categories (
+        "CREATE TABLE IF NOT EXISTS post_categories (
                 post_id INTEGER NOT NULL,
                 category_id INTEGER NOT NULL,
                 PRIMARY KEY (post_id, category_id),
