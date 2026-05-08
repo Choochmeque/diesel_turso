@@ -48,7 +48,6 @@ pub struct TursoPreparedStatement {
 pub struct TursoResult {
     pub column_names: Arc<[String]>,
     pub rows: Vec<Vec<Value>>,
-    pub error: Option<String>,
     pub changes: usize,
 }
 
@@ -135,7 +134,6 @@ impl TursoConnection {
         Ok(TursoResult {
             column_names: Arc::from([]),
             rows: Vec::new(),
-            error: None,
             changes: usize::try_from(rows_affected).map_err(|_| {
                 turso::Error::ConversionFailure(format!(
                     "rows_affected ({rows_affected}) exceeds usize::MAX"
@@ -188,7 +186,6 @@ impl TursoConnection {
         Ok(TursoResult {
             column_names,
             rows,
-            error: None,
             changes: 0,
         })
     }

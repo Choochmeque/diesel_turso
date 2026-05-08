@@ -142,13 +142,6 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 )
             })?;
 
-            if let Some(error) = result.error {
-                return Err(diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::Unknown,
-                    Box::new(TursoError { message: error }),
-                ));
-            }
-
             let column_names = result.column_names;
             let rows: Vec<QueryResult<TursoRow>> = result
                 .rows
@@ -193,13 +186,6 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                     }),
                 )
             })?;
-
-            if let Some(error) = result.error {
-                return Err(diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::Unknown,
-                    Box::new(TursoError { message: error }),
-                ));
-            }
 
             Ok(result.changes)
         }
