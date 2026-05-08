@@ -2260,13 +2260,18 @@ async fn test_prepared_statement_cache_size_configurable() -> QueryResult<()> {
     let n2: i64 = users::table.count().get_result(&mut conn).await?;
     assert_eq!((n1, n2), (1, 1));
 
-    // Disable: cache cleared, subsequent queries re-prepare and still work.
+    // Disable: subsequent queries route through `Connection::prepare`
+    // (no cache lookup, no insert). turso has no public eviction API, so
+    // entries already cached on the connection stay there — they just
+    // aren't reused while disabled. Queries still work because each one
+    // re-prepares.
     conn.set_prepared_statement_cache_size(CacheSize::Disabled);
     let n3: i64 = users::table.count().get_result(&mut conn).await?;
     let n4: i64 = users::table.count().get_result(&mut conn).await?;
     assert_eq!((n3, n4), (1, 1));
 
-    // Re-enable: cache fills again, queries still work.
+    // Re-enable: routing returns to `Connection::prepare_cached`,
+    // queries still work.
     conn.set_prepared_statement_cache_size(CacheSize::Unbounded);
     let n5: i64 = users::table.count().get_result(&mut conn).await?;
     assert_eq!(n5, 1);
