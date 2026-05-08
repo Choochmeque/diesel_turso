@@ -261,7 +261,7 @@ where
             let prepared = prepared?;
             let mut total = 0usize;
             for (sql, binds) in prepared {
-                let inner = conn.ensure_connection().await?;
+                let inner = conn.ensure_connection()?;
                 let mut prep = inner.prepare(&sql);
                 prep.bind(binds);
                 // Each per-row SQL is unique-ish (default columns vary)

@@ -51,8 +51,7 @@ impl TursoDatabase {
         Ok(Self { db })
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn connect(&self) -> Result<TursoConnection, turso::Error> {
+    pub fn connect(&self) -> Result<TursoConnection, turso::Error> {
         let conn = Arc::new(self.db.connect()?);
         Ok(TursoConnection {
             conn,

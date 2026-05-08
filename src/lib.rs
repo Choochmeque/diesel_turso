@@ -53,11 +53,9 @@ impl AsyncTursoConnection {
         })
     }
 
-    pub(crate) async fn ensure_connection(
-        &mut self,
-    ) -> Result<&TursoConnection, diesel::result::Error> {
+    pub(crate) fn ensure_connection(&mut self) -> Result<&TursoConnection, diesel::result::Error> {
         if self.connection.is_none() {
-            let conn = self.binding.connect().await.map_err(|e| {
+            let conn = self.binding.connect().map_err(|e| {
                 diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::UnableToSendCommand,
                     Box::new(TursoError {
@@ -84,7 +82,7 @@ impl SimpleAsyncConnection for AsyncTursoConnection {
             )));
 
         let result = async {
-            let conn = self.ensure_connection().await?;
+            let conn = self.ensure_connection()?;
             let stmt = conn.prepare(query);
             conn.execute_batch(&stmt).await.map_err(|e| {
                 diesel::result::Error::DatabaseError(
@@ -136,7 +134,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 )));
 
             let opened = async {
-                let conn = self.ensure_connection().await?;
+                let conn = self.ensure_connection()?;
                 let mut stmt = conn.prepare(&sql);
                 stmt.bind(binds);
                 stmt.set_cacheable(cacheable);
@@ -237,7 +235,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 )));
 
             let result = async {
-                let conn = self.ensure_connection().await?;
+                let conn = self.ensure_connection()?;
                 let mut stmt = conn.prepare(&sql);
                 stmt.bind(binds);
                 stmt.set_cacheable(cacheable);
