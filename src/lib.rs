@@ -118,16 +118,17 @@ impl AsyncConnectionCore for AsyncTursoConnection {
         T: AsQuery + 'query,
         T::Query: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        let prep = (|| -> QueryResult<(String, Vec<turso::Value>)> {
+        let prep = (|| -> QueryResult<(String, Vec<turso::Value>, bool)> {
             let source = source.as_query();
             let mut query_builder = TursoQueryBuilder::default();
             source.to_sql(&mut query_builder, &TursoBackend)?;
             let binds = construct_bind_data(&source)?;
-            Ok((query_builder.sql, binds))
+            let cacheable = source.is_safe_to_cache_prepared(&TursoBackend)?;
+            Ok((query_builder.sql, binds, cacheable))
         })();
 
         async move {
-            let (sql, binds) = prep?;
+            let (sql, binds, cacheable) = prep?;
 
             self.instrumentation()
                 .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
@@ -138,6 +139,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 let conn = self.ensure_connection().await?;
                 let mut stmt = conn.prepare(&sql);
                 stmt.bind(binds);
+                stmt.set_cacheable(cacheable);
                 conn.query(&stmt).await.map_err(|e| {
                     diesel::result::Error::DatabaseError(
                         diesel::result::DatabaseErrorKind::Unknown,
@@ -178,15 +180,16 @@ impl AsyncConnectionCore for AsyncTursoConnection {
     where
         T: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        let prep = (|| -> QueryResult<(String, Vec<turso::Value>)> {
+        let prep = (|| -> QueryResult<(String, Vec<turso::Value>, bool)> {
             let mut query_builder = TursoQueryBuilder::default();
             source.to_sql(&mut query_builder, &TursoBackend)?;
             let binds = construct_bind_data(&source)?;
-            Ok((query_builder.sql, binds))
+            let cacheable = source.is_safe_to_cache_prepared(&TursoBackend)?;
+            Ok((query_builder.sql, binds, cacheable))
         })();
 
         async move {
-            let (sql, binds) = prep?;
+            let (sql, binds, cacheable) = prep?;
 
             self.instrumentation()
                 .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
@@ -197,6 +200,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
                 let conn = self.ensure_connection().await?;
                 let mut stmt = conn.prepare(&sql);
                 stmt.bind(binds);
+                stmt.set_cacheable(cacheable);
                 conn.execute(&stmt).await.map(|r| r.changes).map_err(|e| {
                     diesel::result::Error::DatabaseError(
                         diesel::result::DatabaseErrorKind::Unknown,

@@ -42,6 +42,12 @@ impl Default for StatementCache {
 pub struct TursoPreparedStatement {
     pub sql: String,
     pub binds: Vec<Value>,
+    /// Mirrors diesel's `QueryFragment::is_safe_to_cache_prepared` signal.
+    /// When `false`, the per-connection statement cache is bypassed and a
+    /// fresh `turso::Statement` is prepared for this call. Defaults to
+    /// `true`; the lib-level callers (`load`/`execute_returning_count`)
+    /// flip it off when diesel reports the query is unsafe to cache.
+    pub cacheable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +79,21 @@ impl TursoConnection {
         TursoPreparedStatement {
             sql: query.to_string(),
             binds: Vec::new(),
+            cacheable: true,
         }
+    }
+
+    /// Number of currently cached prepared statements. Exposed for tests
+    /// that need to assert the per-connection cache grew (or didn't) after
+    /// a query — there's no other way to observe cache state from outside
+    /// the binding module.
+    #[cfg(test)]
+    pub(crate) fn cache_len(&self) -> usize {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .len()
     }
 
     /// Enable or disable the prepared-statement cache. Disabling clears any
@@ -91,8 +111,13 @@ impl TursoConnection {
 
     /// Look up a cached prepared statement for `sql` or prepare and cache one.
     /// Returns an owned `Statement` clone (cheap — `Statement` is internally
-    /// `Arc<Mutex<…>>`).
-    async fn prepare_cached(&self, sql: &str) -> Result<Statement, turso::Error> {
+    /// `Arc<Mutex<…>>`). When `cacheable` is `false` (mirroring diesel's
+    /// `QueryFragment::is_safe_to_cache_prepared`), the cache is bypassed
+    /// in both directions: no lookup, no insert.
+    async fn prepare_cached(&self, sql: &str, cacheable: bool) -> Result<Statement, turso::Error> {
+        if !cacheable {
+            return self.conn.prepare(sql).await;
+        }
         // Bind to a local so the MutexGuard is released before the `await`
         // below — never hold a sync `MutexGuard` across `.await`.
         let cached = self
@@ -115,7 +140,7 @@ impl TursoConnection {
         &self,
         stmt: &TursoPreparedStatement,
     ) -> Result<TursoResult, turso::Error> {
-        let mut prepared = self.prepare_cached(&stmt.sql).await?;
+        let mut prepared = self.prepare_cached(&stmt.sql, stmt.cacheable).await?;
 
         // If the prepared statement produces result columns (SELECT, PRAGMA
         // with output, INSERT/UPDATE/DELETE … RETURNING, …) we can't call
@@ -177,7 +202,7 @@ impl TursoConnection {
     }
 
     pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
-        let mut prepared = self.prepare_cached(&stmt.sql).await?;
+        let mut prepared = self.prepare_cached(&stmt.sql, stmt.cacheable).await?;
         let params: Vec<Value> = stmt.binds.clone();
         let mut rows_iter = prepared.query(params).await?;
         let column_names: Arc<[String]> = prepared
@@ -229,6 +254,13 @@ impl StatementCache {
 }
 
 impl TursoPreparedStatement {
+    /// Mark this statement as not safe for prepared-statement caching,
+    /// mirroring diesel's `QueryFragment::is_safe_to_cache_prepared`.
+    pub const fn set_cacheable(&mut self, cacheable: bool) -> &mut Self {
+        self.cacheable = cacheable;
+        self
+    }
+
     pub fn bind(&mut self, values: Vec<Value>) -> &mut Self {
         self.binds = values;
         self
