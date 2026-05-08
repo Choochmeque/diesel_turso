@@ -1,3 +1,4 @@
+use diesel::deserialize;
 use turso::Value;
 
 #[derive(Debug)]
@@ -74,49 +75,52 @@ impl TursoValue {
         self.value.clone()
     }
 
-    pub(crate) fn read_string(&self) -> String {
+    pub(crate) fn read_string(&self) -> deserialize::Result<String> {
         match &self.value {
-            Value::Text(s) => s.clone(),
-            _ => panic!("Value is not a string, but {:?}", self.value),
+            Value::Text(s) => Ok(s.clone()),
+            other => Err(format!("expected text value, got {other:?}").into()),
         }
     }
 
-    pub(crate) fn read_bool(&self) -> bool {
+    pub(crate) fn read_bool(&self) -> deserialize::Result<bool> {
         match &self.value {
-            Value::Integer(i) => *i != 0,
-            _ => panic!("Value is not a bool, but {:?}", self.value),
+            Value::Integer(i) => Ok(*i != 0),
+            other => Err(format!("expected boolean (integer) value, got {other:?}").into()),
         }
     }
 
-    pub(crate) fn read_int(&self) -> i64 {
+    pub(crate) fn read_int(&self) -> deserialize::Result<i64> {
         match &self.value {
-            Value::Integer(i) => *i,
-            _ => panic!("Value is not an integer, but {:?}", self.value),
+            Value::Integer(i) => Ok(*i),
+            other => Err(format!("expected integer value, got {other:?}").into()),
         }
     }
 
     /// Returns float value. Integer values are widened to `f64` (lossy beyond 2^53).
-    pub(crate) fn read_number(&self) -> f64 {
+    pub(crate) fn read_number(&self) -> deserialize::Result<f64> {
         match &self.value {
-            Value::Real(f) => *f,
+            Value::Real(f) => Ok(*f),
             #[allow(clippy::cast_precision_loss)]
-            Value::Integer(i) => *i as f64,
-            _ => panic!("Value is not a number, but {:?}", self.value),
+            Value::Integer(i) => Ok(*i as f64),
+            other => Err(format!("expected numeric value, got {other:?}").into()),
         }
     }
 
-    pub(crate) fn read_blob(&self) -> Vec<u8> {
+    pub(crate) fn read_blob(&self) -> deserialize::Result<Vec<u8>> {
         match &self.value {
-            Value::Blob(b) => b.clone(),
-            _ => panic!("Value is not a blob, but {:?}", self.value),
+            Value::Blob(b) => Ok(b.clone()),
+            other => Err(format!("expected blob value, got {other:?}").into()),
         }
     }
 
     #[cfg(feature = "chrono")]
-    pub(crate) fn parse_string<R>(&self, f: impl FnOnce(&str) -> R) -> R {
+    pub(crate) fn parse_string<R>(
+        &self,
+        f: impl FnOnce(&str) -> deserialize::Result<R>,
+    ) -> deserialize::Result<R> {
         match &self.value {
             Value::Text(s) => f(s),
-            _ => panic!("Value is not a string, but {:?}", self.value),
+            other => Err(format!("expected text value, got {other:?}").into()),
         }
     }
 

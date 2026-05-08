@@ -60,9 +60,7 @@ fn parse_julian(julian_days: f64) -> Option<NaiveDateTime> {
 #[cfg(feature = "chrono")]
 impl FromSql<sql_types::Date, TursoBackend> for NaiveDate {
     fn from_sql(value: <TursoBackend as Backend>::RawValue<'_>) -> deserialize::Result<Self> {
-        value
-            .parse_string(|s| Self::parse_from_str(s, DATE_FORMAT))
-            .map_err(Into::into)
+        value.parse_string(|s| Self::parse_from_str(s, DATE_FORMAT).map_err(Into::into))
     }
 }
 

@@ -1772,6 +1772,39 @@ async fn test_insert_from_select() -> QueryResult<()> {
     Ok(())
 }
 
+#[derive(diesel::QueryableByName, Debug)]
+struct IntRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    #[diesel(column_name = "val")]
+    _val: i32,
+}
+
+// FromSql must return `QueryResult::Err` on type mismatch instead of panicking.
+// SQLite/turso has dynamic typing — a column declared TEXT can be queried back
+// through an `Integer` SQL type via a raw SELECT, exercising the read_*
+// helpers in TursoValue with a value of the wrong shape.
+#[tokio::test]
+async fn test_type_mismatch_returns_err_not_panic() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("not_a_number"))
+        .execute(&mut conn)
+        .await?;
+
+    let result = diesel::sql_query("SELECT name AS val FROM users")
+        .load::<IntRow>(&mut conn)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "loading a TEXT column as Integer must Err, got {result:?}"
+    );
+
+    drop(conn);
+    Ok(())
+}
+
 // `set_prepared_statement_cache_size` must be a real configuration knob, not
 // a runtime panic. Verify both modes round-trip the same query results.
 //

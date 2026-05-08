@@ -22,7 +22,7 @@ impl HasSqlType<sql_types::Bool> for TursoBackend {
 
 impl FromSql<sql_types::Bool, TursoBackend> for bool {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_bool())
+        value.read_bool()
     }
 }
 
@@ -43,7 +43,7 @@ impl HasSqlType<sql_types::SmallInt> for TursoBackend {
 
 impl FromSql<sql_types::SmallInt, TursoBackend> for i16 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Self::try_from(value.read_int()).map_err(Into::into)
+        Self::try_from(value.read_int()?).map_err(Into::into)
     }
 }
 
@@ -66,7 +66,7 @@ impl HasSqlType<sql_types::Integer> for TursoBackend {
 
 impl FromSql<sql_types::Integer, TursoBackend> for i32 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Self::try_from(value.read_int()).map_err(Into::into)
+        Self::try_from(value.read_int()?).map_err(Into::into)
     }
 }
 
@@ -89,7 +89,7 @@ impl HasSqlType<sql_types::BigInt> for TursoBackend {
 
 impl FromSql<sql_types::BigInt, TursoBackend> for i64 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_int())
+        value.read_int()
     }
 }
 
@@ -113,7 +113,7 @@ impl HasSqlType<sql_types::Float> for TursoBackend {
 impl FromSql<sql_types::Float, TursoBackend> for f32 {
     #[allow(clippy::cast_possible_truncation)]
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number() as Self)
+        Ok(value.read_number()? as Self)
     }
 }
 
@@ -136,7 +136,7 @@ impl HasSqlType<sql_types::Double> for TursoBackend {
 
 impl FromSql<sql_types::Double, TursoBackend> for f64 {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_number())
+        value.read_number()
     }
 }
 
@@ -165,13 +165,13 @@ impl ToSql<sql_types::Text, TursoBackend> for str {
 
 impl FromSql<sql_types::Text, TursoBackend> for String {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_string())
+        value.read_string()
     }
 }
 
 impl FromSql<sql_types::Binary, TursoBackend> for Vec<u8> {
     fn from_sql(value: TursoValue) -> deserialize::Result<Self> {
-        Ok(value.read_blob())
+        value.read_blob()
     }
 }
 
