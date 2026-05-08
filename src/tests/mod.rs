@@ -1878,6 +1878,59 @@ async fn test_returning_insert_update_delete() -> QueryResult<()> {
     Ok(())
 }
 
+// `.execute()` on a statement that carries a RETURNING clause is routed
+// through `TursoConnection::query()` (because the prepared statement has
+// output columns), so the affected-row count must come from
+// `Statement::n_change()` — *not* a hard-coded zero. Regression test for
+// the bug where `INSERT/UPDATE/DELETE … RETURNING` driven through
+// `execute_returning_count()` reported 0 rows even though the mutation
+// did apply.
+#[tokio::test]
+async fn test_execute_on_returning_statement_reports_change_count() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    // INSERT … RETURNING via `.execute()` — must report 1.
+    let n = diesel::insert_into(users::table)
+        .values(users::name.eq("ret-exec-A"))
+        .returning(users::id)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(n, 1, "INSERT … RETURNING via .execute() should report 1");
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("ret-exec-B"))
+        .execute(&mut conn)
+        .await?;
+    diesel::insert_into(users::table)
+        .values(users::name.eq("ret-exec-C"))
+        .execute(&mut conn)
+        .await?;
+
+    // UPDATE … RETURNING via `.execute()` — must report rows updated.
+    let n = diesel::update(users::table.filter(users::name.like("ret-exec-%")))
+        .set(users::name.eq("ret-exec-X"))
+        .returning(users::id)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(
+        n, 3,
+        "UPDATE … RETURNING via .execute() should report rows updated"
+    );
+
+    // DELETE … RETURNING via `.execute()` — must report rows deleted.
+    let n = diesel::delete(users::table.filter(users::name.eq("ret-exec-X")))
+        .returning(users::id)
+        .execute(&mut conn)
+        .await?;
+    assert_eq!(
+        n, 3,
+        "DELETE … RETURNING via .execute() should report rows deleted"
+    );
+
+    drop(conn);
+    Ok(())
+}
+
 // FromSql must return `QueryResult::Err` on type mismatch instead of panicking.
 // SQLite/turso has dynamic typing — a column declared TEXT can be queried back
 // through an `Integer` SQL type via a raw SELECT, exercising the read_*

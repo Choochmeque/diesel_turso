@@ -195,10 +195,20 @@ impl TursoConnection {
             rows.push(row_data);
         }
 
+        // Capture rows-affected after stepping. `Statement::n_change()` is
+        // 0 for plain SELECTs (so this is correct for `load()`), and for
+        // INSERT/UPDATE/DELETE … RETURNING — which `execute()` re-routes
+        // here — it reports the actual mutation count rather than 0.
+        let changes = prepared.n_change();
+
         Ok(TursoResult {
             column_names,
             rows,
-            changes: 0,
+            changes: usize::try_from(changes).map_err(|_| {
+                turso::Error::ConversionFailure(format!(
+                    "rows_affected ({changes}) exceeds usize::MAX"
+                ))
+            })?,
         })
     }
 }
