@@ -80,7 +80,10 @@ impl TursoConnection {
     /// Enable or disable the prepared-statement cache. Disabling clears any
     /// already-cached entries.
     pub fn set_cache_enabled(&self, enabled: bool) {
-        let mut cache = self.cache.lock().expect("statement cache mutex poisoned");
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.enabled = enabled;
         if !enabled {
             cache.entries.clear();
@@ -96,7 +99,7 @@ impl TursoConnection {
         let cached = self
             .cache
             .lock()
-            .expect("statement cache mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(sql);
         if let Some(stmt) = cached {
             return Ok(stmt);
@@ -104,7 +107,7 @@ impl TursoConnection {
         let stmt = self.conn.prepare(sql).await?;
         self.cache
             .lock()
-            .expect("statement cache mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(sql, &stmt);
         Ok(stmt)
     }
@@ -114,19 +117,20 @@ impl TursoConnection {
         stmt: &TursoPreparedStatement,
     ) -> Result<TursoResult, turso::Error> {
         let mut prepared = self.prepare_cached(&stmt.sql).await?;
-        let params: Vec<Value> = stmt.binds.clone();
-        let result = prepared.execute(params).await;
 
-        // Workaround: some statements (e.g. PRAGMA) return rows but were
-        // dispatched here. Re-route through `query()` which keeps the same
-        // cached prepared statement.
-        let rows_affected = match result {
-            Ok(res) => res,
-            Err(turso::Error::Misuse(msg)) if msg.contains("unexpected row") => {
-                return self.query(stmt).await;
-            }
-            Err(e) => return Err(e),
-        };
+        // If the prepared statement produces result columns (SELECT, PRAGMA
+        // with output, INSERT/UPDATE/DELETE … RETURNING, …) we can't call
+        // `Statement::execute` on it — turso surfaces the first stepped row
+        // as a `Misuse("unexpected row …")` error. Detect via column metadata
+        // at prepare time and route through `query()` instead. This is
+        // structural (no error-string matching) and stable across SDK
+        // versions.
+        if !prepared.columns().is_empty() {
+            return self.query(stmt).await;
+        }
+
+        let params: Vec<Value> = stmt.binds.clone();
+        let rows_affected = prepared.execute(params).await?;
 
         Ok(TursoResult {
             column_names: Arc::from([]),
