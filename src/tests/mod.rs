@@ -1037,8 +1037,7 @@ async fn test_batch_insert_with_default_values_atomic_on_failure() -> QueryResul
     let after_posts: i64 = posts::table.count().get_result(&mut conn).await?;
     assert_eq!(
         after_posts, baseline_posts,
-        "defaultable batch insert must be atomic; partial success was committed: {} → {}",
-        baseline_posts, after_posts,
+        "defaultable batch insert must be atomic; partial success was committed: {baseline_posts} → {after_posts}",
     );
 
     drop(conn);
