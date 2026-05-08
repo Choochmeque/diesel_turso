@@ -397,29 +397,9 @@ async fn test_aggregate_functions() -> Result<(), turso::Error> {
         }
     }
 
-    conn.execute(
-        "INSERT INTO comments (post_id, user_id, content, rating) 
-                       VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
-        vec![
-            Value::Integer(1),
-            Value::Integer(1),
-            Value::Text("Great!".to_string()),
-            Value::Integer(5),
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Text("Good".to_string()),
-            Value::Integer(4),
-            Value::Integer(1),
-            Value::Integer(3),
-            Value::Text("OK".to_string()),
-            Value::Integer(3),
-        ],
-    )
-    .await?;
-
     let comment_insert = conn
         .execute(
-            "INSERT INTO comments (post_id, user_id, content, rating) 
+            "INSERT INTO comments (post_id, user_id, content, rating)
                        VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
             vec![
                 Value::Integer(1),
@@ -438,6 +418,14 @@ async fn test_aggregate_functions() -> Result<(), turso::Error> {
         )
         .await?;
     assert_eq!(comment_insert, 3);
+
+    let mut stmt = conn.prepare("SELECT count(*) FROM comments").await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    if let Some(row) = rows.next().await? {
+        if let Value::Integer(count) = row.get_value(0)? {
+            assert_eq!(count, 3, "final dataset should hold exactly 3 comments");
+        }
+    }
 
     Ok(())
 }
@@ -516,23 +504,9 @@ async fn test_join_operations() -> Result<(), turso::Error> {
 async fn test_nullable_fields() -> Result<(), turso::Error> {
     let conn = connection().await;
 
-    conn.execute(
-        "INSERT INTO categories (name, description) VALUES 
-                       (?, ?), (?, ?), (?, ?)",
-        vec![
-            Value::Text("WithDesc".to_string()),
-            Value::Text("Has description".to_string()),
-            Value::Text("NoDesc".to_string()),
-            Value::Null,
-            Value::Text("EmptyDesc".to_string()),
-            Value::Text(String::new()),
-        ],
-    )
-    .await?;
-
     let category_insert = conn
         .execute(
-            "INSERT INTO categories (name, description) VALUES 
+            "INSERT INTO categories (name, description) VALUES
                        (?, ?), (?, ?), (?, ?)",
             vec![
                 Value::Text("WithDesc".to_string()),
@@ -567,25 +541,9 @@ async fn test_nullable_fields() -> Result<(), turso::Error> {
     )
     .await?;
 
-    conn.execute(
-        "INSERT INTO comments (post_id, user_id, content, rating) 
-                       VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
-        vec![
-            Value::Integer(1),
-            Value::Integer(1),
-            Value::Text("Rated".to_string()),
-            Value::Integer(5),
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Text("Unrated".to_string()),
-            Value::Null,
-        ],
-    )
-    .await?;
-
-    let comment_insert2 = conn
+    let comment_insert = conn
         .execute(
-            "INSERT INTO comments (post_id, user_id, content, rating) 
+            "INSERT INTO comments (post_id, user_id, content, rating)
                        VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
             vec![
                 Value::Integer(1),
@@ -599,7 +557,28 @@ async fn test_nullable_fields() -> Result<(), turso::Error> {
             ],
         )
         .await?;
-    assert_eq!(comment_insert2, 2);
+    assert_eq!(comment_insert, 2);
+
+    // Final-state checks: both rows persist; one has a rating, one is NULL.
+    let mut stmt = conn
+        .prepare("SELECT count(*) FROM comments WHERE rating IS NULL")
+        .await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    if let Some(row) = rows.next().await? {
+        if let Value::Integer(count) = row.get_value(0)? {
+            assert_eq!(count, 1, "exactly one comment should have NULL rating");
+        }
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT count(*) FROM comments WHERE rating IS NOT NULL")
+        .await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    if let Some(row) = rows.next().await? {
+        if let Value::Integer(count) = row.get_value(0)? {
+            assert_eq!(count, 1, "exactly one comment should have a rating");
+        }
+    }
 
     Ok(())
 }
@@ -607,18 +586,6 @@ async fn test_nullable_fields() -> Result<(), turso::Error> {
 #[tokio::test]
 async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
     let conn = connection().await;
-
-    conn.execute(
-        "INSERT INTO users (name) VALUES (?), (?), (?), (?), (?)",
-        vec![
-            Value::Text("Alice".to_string()),
-            Value::Text("Bob".to_string()),
-            Value::Text("Alice".to_string()),
-            Value::Text("Charlie".to_string()),
-            Value::Text("Bob".to_string()),
-        ],
-    )
-    .await?;
 
     let user_insert = conn
         .execute(
@@ -638,7 +605,7 @@ async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
         let post_count = i % 3 + 1;
         for j in 1..=post_count {
             conn.execute(
-                "INSERT INTO posts (title, body, published, user_id, created_at) 
+                "INSERT INTO posts (title, body, published, user_id, created_at)
                  VALUES (?, ?, ?, ?, datetime('now'))",
                 vec![
                     Value::Text(format!("Post {j}")),
@@ -662,9 +629,16 @@ async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
             distinct_names.push(name);
         }
     }
-    assert!(distinct_names.contains(&"Alice".to_string()));
-    assert!(distinct_names.contains(&"Bob".to_string()));
-    assert!(distinct_names.contains(&"Charlie".to_string()));
+    // ORDER BY name in the SELECT means we expect a sorted, exhaustive list:
+    // 5 inserted rows with 3 distinct names.
+    assert_eq!(
+        distinct_names,
+        vec![
+            "Alice".to_string(),
+            "Bob".to_string(),
+            "Charlie".to_string()
+        ]
+    );
 
     Ok(())
 }
