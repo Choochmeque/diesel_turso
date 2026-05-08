@@ -36,6 +36,9 @@ pub struct AsyncTursoConnection {
     binding: TursoDatabase,
     pub(crate) connection: Option<TursoConnection>,
     instrumentation: Box<dyn Instrumentation>,
+    /// Whether the prepared-statement cache is enabled. Diesel's default
+    /// is `CacheSize::Unbounded`, so cache is on unless the user disables it.
+    cache_enabled: bool,
 }
 
 impl AsyncTursoConnection {
@@ -46,6 +49,7 @@ impl AsyncTursoConnection {
             binding,
             connection: None,
             instrumentation: Box::new(get_default_instrumentation()),
+            cache_enabled: true,
         })
     }
 
@@ -61,6 +65,8 @@ impl AsyncTursoConnection {
                     }),
                 )
             })?;
+            // Apply the user-requested cache setting to the new connection.
+            conn.set_cache_enabled(self.cache_enabled);
             self.connection = Some(conn);
         }
         let Some(conn) = self.connection.as_ref() else {
@@ -222,8 +228,14 @@ impl AsyncConnection for AsyncTursoConnection {
     }
 
     #[doc = " Set the prepared statement cache size to [`CacheSize`] for this connection"]
-    fn set_prepared_statement_cache_size(&mut self, _size: CacheSize) {
-        todo!()
+    fn set_prepared_statement_cache_size(&mut self, size: CacheSize) {
+        // turso's bindings don't expose a bounded LRU; map diesel's two
+        // settings to enable/disable.
+        let enabled = matches!(size, CacheSize::Unbounded);
+        self.cache_enabled = enabled;
+        if let Some(conn) = self.connection.as_ref() {
+            conn.set_cache_enabled(enabled);
+        }
     }
 }
 

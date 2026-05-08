@@ -1,5 +1,6 @@
-use std::sync::Arc;
-use turso::{Builder, Connection, Database, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use turso::{Builder, Connection, Database, Statement, Value};
 
 #[derive(Debug, Clone)]
 pub struct TursoDatabase {
@@ -9,6 +10,32 @@ pub struct TursoDatabase {
 #[derive(Debug, Clone)]
 pub struct TursoConnection {
     pub conn: Arc<Connection>,
+    /// Per-connection prepared-statement cache keyed by SQL text.
+    /// Default is enabled (matches diesel's `CacheSize::Unbounded`).
+    cache: Arc<Mutex<StatementCache>>,
+}
+
+struct StatementCache {
+    enabled: bool,
+    entries: HashMap<String, Statement>,
+}
+
+impl std::fmt::Debug for StatementCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatementCache")
+            .field("enabled", &self.enabled)
+            .field("len", &self.entries.len())
+            .finish()
+    }
+}
+
+impl Default for StatementCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            entries: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +61,10 @@ impl TursoDatabase {
     #[allow(clippy::unused_async)]
     pub async fn connect(&self) -> Result<TursoConnection, turso::Error> {
         let conn = Arc::new(self.db.connect()?);
-        Ok(TursoConnection { conn })
+        Ok(TursoConnection {
+            conn,
+            cache: Arc::new(Mutex::new(StatementCache::default())),
+        })
     }
 }
 
@@ -47,15 +77,49 @@ impl TursoConnection {
         }
     }
 
+    /// Enable or disable the prepared-statement cache. Disabling clears any
+    /// already-cached entries.
+    pub fn set_cache_enabled(&self, enabled: bool) {
+        let mut cache = self.cache.lock().expect("statement cache mutex poisoned");
+        cache.enabled = enabled;
+        if !enabled {
+            cache.entries.clear();
+        }
+    }
+
+    /// Look up a cached prepared statement for `sql` or prepare and cache one.
+    /// Returns an owned `Statement` clone (cheap — `Statement` is internally
+    /// `Arc<Mutex<…>>`).
+    async fn prepare_cached(&self, sql: &str) -> Result<Statement, turso::Error> {
+        // Bind to a local so the MutexGuard is released before the `await`
+        // below — never hold a sync `MutexGuard` across `.await`.
+        let cached = self
+            .cache
+            .lock()
+            .expect("statement cache mutex poisoned")
+            .lookup(sql);
+        if let Some(stmt) = cached {
+            return Ok(stmt);
+        }
+        let stmt = self.conn.prepare(sql).await?;
+        self.cache
+            .lock()
+            .expect("statement cache mutex poisoned")
+            .insert(sql, &stmt);
+        Ok(stmt)
+    }
+
     pub async fn execute(
         &self,
         stmt: &TursoPreparedStatement,
     ) -> Result<TursoResult, turso::Error> {
-        // Execute the statement
+        let mut prepared = self.prepare_cached(&stmt.sql).await?;
         let params: Vec<Value> = stmt.binds.clone();
-        let result = self.conn.execute(&stmt.sql, params).await;
+        let result = prepared.execute(params).await;
 
-        // TODO: Workaround: some statements (like PRAGMA) return rows but are called via execute()
+        // Workaround: some statements (e.g. PRAGMA) return rows but were
+        // dispatched here. Re-route through `query()` which keeps the same
+        // cached prepared statement.
         let rows_affected = match result {
             Ok(res) => res,
             Err(turso::Error::Misuse(msg)) if msg.contains("unexpected row") => {
@@ -77,13 +141,14 @@ impl TursoConnection {
     }
 
     pub async fn execute_batch(&self, stmt: &TursoPreparedStatement) -> Result<(), turso::Error> {
-        // Execute the statement
+        // Batch SQL is multi-statement and not cacheable as a single
+        // prepared statement.
         self.conn.execute_batch(&stmt.sql).await?;
         Ok(())
     }
 
     pub async fn query(&self, stmt: &TursoPreparedStatement) -> Result<TursoResult, turso::Error> {
-        let mut prepared = self.conn.prepare(&stmt.sql).await?;
+        let mut prepared = self.prepare_cached(&stmt.sql).await?;
         let params: Vec<Value> = stmt.binds.clone();
         let mut rows_iter = prepared.query(params).await?;
         let column_names: Arc<[String]> = prepared
@@ -107,6 +172,21 @@ impl TursoConnection {
             error: None,
             changes: 0,
         })
+    }
+}
+
+impl StatementCache {
+    fn lookup(&self, sql: &str) -> Option<Statement> {
+        if !self.enabled {
+            return None;
+        }
+        self.entries.get(sql).cloned()
+    }
+
+    fn insert(&mut self, sql: &str, stmt: &Statement) {
+        if self.enabled {
+            self.entries.insert(sql.to_string(), stmt.clone());
+        }
     }
 }
 

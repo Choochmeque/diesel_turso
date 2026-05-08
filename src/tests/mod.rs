@@ -1,5 +1,6 @@
 use super::backend::TursoBackend;
 use super::AsyncTursoConnection;
+use diesel::connection::CacheSize;
 use diesel::expression_methods::AggregateExpressionMethods;
 use diesel::prelude::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel::{
@@ -1766,6 +1767,42 @@ async fn test_insert_from_select() -> QueryResult<()> {
         .load(&mut conn)
         .await?;
     assert_eq!(cat_names, vec!["A", "B", "C"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// `set_prepared_statement_cache_size` must be a real configuration knob, not
+// a runtime panic. Verify both modes round-trip the same query results.
+//
+// We can't observe the cache contents directly through the public diesel
+// API, so this test asserts behavioral parity: identical query semantics
+// whether the cache is enabled or disabled, including a repeated call that
+// would hit the cache when enabled and re-prepare from scratch when disabled.
+#[tokio::test]
+async fn test_prepared_statement_cache_size_configurable() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("CacheUser"))
+        .execute(&mut conn)
+        .await?;
+
+    // Default (Unbounded): repeated identical queries should both succeed.
+    let n1: i64 = users::table.count().get_result(&mut conn).await?;
+    let n2: i64 = users::table.count().get_result(&mut conn).await?;
+    assert_eq!((n1, n2), (1, 1));
+
+    // Disable: cache cleared, subsequent queries re-prepare and still work.
+    conn.set_prepared_statement_cache_size(CacheSize::Disabled);
+    let n3: i64 = users::table.count().get_result(&mut conn).await?;
+    let n4: i64 = users::table.count().get_result(&mut conn).await?;
+    assert_eq!((n3, n4), (1, 1));
+
+    // Re-enable: cache fills again, queries still work.
+    conn.set_prepared_statement_cache_size(CacheSize::Unbounded);
+    let n5: i64 = users::table.count().get_result(&mut conn).await?;
+    assert_eq!(n5, 1);
 
     drop(conn);
     Ok(())
