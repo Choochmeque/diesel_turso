@@ -968,3 +968,116 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
     drop(conn);
     Ok(())
 }
+
+// Successful commit path: closure returns Ok, all writes are observable after.
+// `transaction_test` only exercises the rollback case, so the commit case
+// previously went untested at the diesel-async layer.
+#[tokio::test]
+async fn test_transaction_commit() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let result: Result<(), diesel::result::Error> = conn
+        .transaction(async |conn| {
+            diesel::insert_into(users::table)
+                .values(users::name.eq("Alice"))
+                .execute(conn)
+                .await?;
+            diesel::insert_into(users::table)
+                .values(users::name.eq("Bob"))
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+        .await;
+    assert!(result.is_ok(), "commit path should succeed: {result:?}");
+
+    let names: Vec<String> = users::table
+        .select(users::name)
+        .order(users::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(names, vec!["Alice", "Bob"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// Outer transaction commits while a nested transaction is explicitly
+// rolled back. The outer's own writes must persist; the inner's writes
+// must not be observable after.
+#[tokio::test]
+async fn test_transaction_nested_inner_rollback() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let outer: Result<(), diesel::result::Error> = conn
+        .transaction(async |conn| {
+            diesel::insert_into(users::table)
+                .values(users::name.eq("Outer"))
+                .execute(conn)
+                .await?;
+
+            let inner: Result<(), diesel::result::Error> = conn
+                .transaction(async |conn| {
+                    diesel::insert_into(users::table)
+                        .values(users::name.eq("Inner"))
+                        .execute(conn)
+                        .await?;
+                    Err(diesel::result::Error::RollbackTransaction)
+                })
+                .await;
+            assert_eq!(inner, Err(diesel::result::Error::RollbackTransaction));
+
+            // Inner's row must already be gone within the outer scope.
+            let count_in_outer = users::table.count().get_result::<i64>(conn).await?;
+            assert_eq!(
+                count_in_outer, 1,
+                "after inner rollback only outer's row remains"
+            );
+
+            Ok(())
+        })
+        .await;
+    assert!(outer.is_ok(), "outer should commit: {outer:?}");
+
+    let names: Vec<String> = users::table.select(users::name).load(&mut conn).await?;
+    assert_eq!(names, vec!["Outer"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// A constraint violation inside a transaction must propagate as an Err
+// from `.transaction(...)` and the writes that succeeded before the
+// violation must be rolled back.
+#[tokio::test]
+async fn test_transaction_constraint_violation_rolls_back() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let result: Result<(), diesel::result::Error> = conn
+        .transaction(async |conn| {
+            diesel::insert_into(users::table)
+                .values(users::name.eq("Will be rolled back"))
+                .execute(conn)
+                .await?;
+            // `users.name` is declared NOT NULL; this insert violates the
+            // constraint and short-circuits the closure with the DB error.
+            diesel::sql_query("INSERT INTO users (name) VALUES (NULL)")
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "transaction with constraint violation must error, got {result:?}"
+    );
+
+    let count = users::table.count().get_result::<i64>(&mut conn).await?;
+    assert_eq!(
+        count, 0,
+        "the pre-violation insert must have been rolled back"
+    );
+
+    drop(conn);
+    Ok(())
+}

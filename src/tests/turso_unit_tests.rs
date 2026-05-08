@@ -669,28 +669,54 @@ async fn test_distinct_and_grouping() -> Result<(), turso::Error> {
     Ok(())
 }
 
+// Exercises BEGIN/COMMIT/ROLLBACK at the raw turso SDK layer.
+// Both branches matter:
+//   - committed writes must persist after COMMIT
+//   - rolled-back writes must be visible inside the transaction but gone after ROLLBACK
+async fn count_users(conn: &Connection) -> Result<i64, turso::Error> {
+    let mut stmt = conn.prepare("SELECT count(*) FROM users").await?;
+    let mut rows = stmt.query(Vec::<Value>::new()).await?;
+    let row = rows
+        .next()
+        .await?
+        .expect("count(*) returns exactly one row");
+    match row.get_value(0)? {
+        Value::Integer(n) => Ok(n),
+        other => panic!("expected integer count, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn test_transactions() -> Result<(), turso::Error> {
     let conn = connection().await;
 
-    let initial_insert = conn
-        .execute(
-            "INSERT INTO users (name) VALUES (?), (?)",
-            vec![
-                Value::Text("John Doe".to_string()),
-                Value::Text("Jane Doe".to_string()),
-            ],
-        )
-        .await?;
-    assert_eq!(initial_insert, 2);
+    // Commit branch
+    conn.execute("BEGIN", Vec::<Value>::new()).await?;
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?), (?)",
+        vec![
+            Value::Text("Alice".to_string()),
+            Value::Text("Bob".to_string()),
+        ],
+    )
+    .await?;
+    conn.execute("COMMIT", Vec::<Value>::new()).await?;
+    assert_eq!(count_users(&conn).await?, 2, "rows persist after COMMIT");
 
-    let dave_insert = conn
-        .execute(
-            "INSERT INTO users (name) VALUES (?)",
-            vec![Value::Text("Dave".to_string())],
-        )
-        .await?;
-    assert_eq!(dave_insert, 1);
+    // Rollback branch
+    conn.execute("BEGIN", Vec::<Value>::new()).await?;
+    conn.execute(
+        "INSERT INTO users (name) VALUES (?)",
+        vec![Value::Text("Charlie".to_string())],
+    )
+    .await?;
+    assert_eq!(
+        count_users(&conn).await?,
+        3,
+        "row visible inside open transaction"
+    );
+    conn.execute("ROLLBACK", Vec::<Value>::new()).await?;
+    assert_eq!(count_users(&conn).await?, 2, "row gone after ROLLBACK");
 
     Ok(())
 }
