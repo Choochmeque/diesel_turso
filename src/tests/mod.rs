@@ -1779,6 +1779,60 @@ struct IntRow {
     _val: i32,
 }
 
+#[derive(diesel::QueryableByName, Debug, PartialEq)]
+struct CacheInvalidationRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    a: i32,
+}
+
+// `batch_execute` is the path diesel uses for schema migrations and any
+// multi-statement DDL. It must invalidate the per-connection prepared-
+// statement cache, otherwise a query whose SQL text matches one that ran
+// *before* the schema change could be served from a stale cached plan.
+//
+// Same-SQL repro: prime the cache with `SELECT a FROM cache_invalidation_t`,
+// drop+recreate+repopulate the table via `batch_execute`, then run the
+// *exact same* SELECT. With the cache flushed, we re-prepare against the
+// new schema and see the new row. (Without the flush, modern turso would
+// still recover via SDK-level `SQLITE_SCHEMA` retry, but that costs an
+// extra round-trip and silently relies on the SDK's re-prepare contract;
+// proactively clearing the cache makes the contract explicit on our side.)
+#[tokio::test]
+async fn test_batch_execute_invalidates_statement_cache() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::sql_query("CREATE TABLE cache_invalidation_t (a INTEGER)")
+        .execute(&mut conn)
+        .await?;
+    diesel::sql_query("INSERT INTO cache_invalidation_t (a) VALUES (1)")
+        .execute(&mut conn)
+        .await?;
+
+    // Prime the cache.
+    let before: Vec<CacheInvalidationRow> = diesel::sql_query("SELECT a FROM cache_invalidation_t")
+        .load(&mut conn)
+        .await?;
+    assert_eq!(before, vec![CacheInvalidationRow { a: 1 }]);
+
+    // Schema-changing batch — this is what `execute_batch` should flush
+    // the cache for.
+    conn.batch_execute(
+        "DROP TABLE cache_invalidation_t; \
+         CREATE TABLE cache_invalidation_t (a INTEGER); \
+         INSERT INTO cache_invalidation_t (a) VALUES (42);",
+    )
+    .await?;
+
+    // Same SQL string as before — would hit the cache if we didn't flush.
+    let after: Vec<CacheInvalidationRow> = diesel::sql_query("SELECT a FROM cache_invalidation_t")
+        .load(&mut conn)
+        .await?;
+    assert_eq!(after, vec![CacheInvalidationRow { a: 42 }]);
+
+    drop(conn);
+    Ok(())
+}
+
 // `RETURNING` is supported by turso (and SQLite ≥ 3.35); the backend dialect
 // declares `SqliteReturningClause` so diesel emits the clause and this whole
 // round-trip works through the typed `.returning(...)` DSL.
