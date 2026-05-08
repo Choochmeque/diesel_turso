@@ -2006,3 +2006,80 @@ async fn test_prepared_statement_cache_size_configurable() -> QueryResult<()> {
     drop(conn);
     Ok(())
 }
+
+// `load()` and `execute_returning_count()` must emit `StartQuery` /
+// `FinishQuery` events around the database round-trip — not only
+// `batch_execute()`. Capture events through a custom `Instrumentation`
+// closure and assert paired start/finish for both the execute path
+// (INSERT) and the load path (SELECT). Also covers the failure path:
+// a `FinishQuery` with `error: Some(_)` must fire when the DB call
+// itself fails (here, a deliberately invalid SQL via `sql_query`).
+#[tokio::test]
+async fn test_instrumentation_events_for_load_and_execute() -> QueryResult<()> {
+    use diesel::connection::InstrumentationEvent;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum EventKind {
+        Start,
+        FinishOk,
+        FinishErr,
+        Other,
+    }
+
+    let events: Arc<Mutex<Vec<EventKind>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut conn = connection().await;
+
+    let recorder = events.clone();
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        let kind = match event {
+            InstrumentationEvent::StartQuery { .. } => EventKind::Start,
+            InstrumentationEvent::FinishQuery { error: Some(_), .. } => EventKind::FinishErr,
+            InstrumentationEvent::FinishQuery { error: None, .. } => EventKind::FinishOk,
+            _ => EventKind::Other,
+        };
+        recorder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(kind);
+    });
+
+    // execute_returning_count path
+    diesel::insert_into(users::table)
+        .values(users::name.eq("instr-1"))
+        .execute(&mut conn)
+        .await?;
+
+    // load path
+    let _: Vec<User> = users::table.load(&mut conn).await?;
+
+    // failure path: DB-side error must produce a FinishErr event.
+    let err = diesel::sql_query("SELECT NotAColumn FROM not_a_table")
+        .execute(&mut conn)
+        .await;
+    assert!(err.is_err(), "expected DB error for bogus SQL");
+
+    let log = events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+
+    let starts = log.iter().filter(|e| **e == EventKind::Start).count();
+    let finishes_ok = log.iter().filter(|e| **e == EventKind::FinishOk).count();
+    let finishes_err = log.iter().filter(|e| **e == EventKind::FinishErr).count();
+
+    // 3 round-trips: insert (ok), load (ok), bogus (err).
+    assert_eq!(starts, 3, "one StartQuery per DB round-trip; got {log:?}");
+    assert_eq!(
+        starts,
+        finishes_ok + finishes_err,
+        "every StartQuery must be paired with a FinishQuery; got {log:?}",
+    );
+    assert!(
+        finishes_err >= 1,
+        "the failing query must produce a FinishQuery with an error; got {log:?}",
+    );
+
+    drop(conn);
+    Ok(())
+}

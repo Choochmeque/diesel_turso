@@ -128,20 +128,34 @@ impl AsyncConnectionCore for AsyncTursoConnection {
 
         async move {
             let (sql, binds) = prep?;
-            let conn = self.ensure_connection().await?;
 
-            let mut stmt = conn.prepare(&sql);
-            stmt.bind(binds);
+            self.instrumentation()
+                .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
+                    &sql,
+                )));
 
-            let result = conn.query(&stmt).await.map_err(|e| {
-                diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::Unknown,
-                    Box::new(TursoError {
-                        message: e.to_string(),
-                    }),
-                )
-            })?;
+            let result = async {
+                let conn = self.ensure_connection().await?;
+                let mut stmt = conn.prepare(&sql);
+                stmt.bind(binds);
+                conn.query(&stmt).await.map_err(|e| {
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown,
+                        Box::new(TursoError {
+                            message: e.to_string(),
+                        }),
+                    )
+                })
+            }
+            .await;
 
+            self.instrumentation()
+                .on_connection_event(InstrumentationEvent::finish_query(
+                    &StrQueryHelper::new(&sql),
+                    result.as_ref().err(),
+                ));
+
+            let result = result?;
             let column_names = result.column_names;
             let rows: Vec<QueryResult<TursoRow>> = result
                 .rows
@@ -173,21 +187,34 @@ impl AsyncConnectionCore for AsyncTursoConnection {
 
         async move {
             let (sql, binds) = prep?;
-            let conn = self.ensure_connection().await?;
 
-            let mut stmt = conn.prepare(&sql);
-            stmt.bind(binds);
+            self.instrumentation()
+                .on_connection_event(InstrumentationEvent::start_query(&StrQueryHelper::new(
+                    &sql,
+                )));
 
-            let result = conn.execute(&stmt).await.map_err(|e| {
-                diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::Unknown,
-                    Box::new(TursoError {
-                        message: e.to_string(),
-                    }),
-                )
-            })?;
+            let result = async {
+                let conn = self.ensure_connection().await?;
+                let mut stmt = conn.prepare(&sql);
+                stmt.bind(binds);
+                conn.execute(&stmt).await.map(|r| r.changes).map_err(|e| {
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown,
+                        Box::new(TursoError {
+                            message: e.to_string(),
+                        }),
+                    )
+                })
+            }
+            .await;
 
-            Ok(result.changes)
+            self.instrumentation()
+                .on_connection_event(InstrumentationEvent::finish_query(
+                    &StrQueryHelper::new(&sql),
+                    result.as_ref().err(),
+                ));
+
+            result
         }
         .boxed()
     }
