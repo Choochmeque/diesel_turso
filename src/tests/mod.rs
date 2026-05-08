@@ -2,7 +2,8 @@ use super::backend::TursoBackend;
 use super::AsyncTursoConnection;
 use diesel::prelude::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel::{
-    BoolExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryResult, TextExpressionMethods,
+    BoolExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryResult, SelectableHelper,
+    TextExpressionMethods,
 };
 use diesel_async::*;
 use std::fmt::Debug;
@@ -1287,6 +1288,264 @@ async fn test_join_with_multi_condition_on() -> QueryResult<()> {
         high_rated[0],
         ("Excellent".to_string(), "Reviewer".to_string())
     );
+
+    drop(conn);
+    Ok(())
+}
+
+// AsChangeset + Identifiable: update a row by passing an updated entity to
+// `diesel::update(&entity).set(&entity)`. This is the idiomatic ORM update
+// pattern that the structs already derive support for.
+#[tokio::test]
+async fn test_update_with_aschangeset() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("Original"))
+        .execute(&mut conn)
+        .await?;
+
+    let mut user: User = users::table.first(&mut conn).await?;
+    user.name = "Updated".into();
+
+    let changed = diesel::update(&user).set(&user).execute(&mut conn).await?;
+    assert_eq!(changed, 1);
+
+    let reloaded: User = users::table.first(&mut conn).await?;
+    assert_eq!(reloaded.name, "Updated");
+
+    drop(conn);
+    Ok(())
+}
+
+// Selectable: load via `User::as_select()` instead of relying on positional
+// `Queryable`. Recommended for evolving schemas.
+#[tokio::test]
+async fn test_selectable() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("Sel"))
+        .execute(&mut conn)
+        .await?;
+
+    let users_list: Vec<User> = users::table
+        .select(User::as_select())
+        .load(&mut conn)
+        .await?;
+
+    assert_eq!(users_list.len(), 1);
+    assert_eq!(users_list[0].name, "Sel");
+
+    drop(conn);
+    Ok(())
+}
+
+// `.into_boxed()`: compose a query at runtime, applying filters conditionally.
+#[tokio::test]
+async fn test_boxed_query() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    for n in &["Alice", "Bob", "Charlie"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let needle: Option<&str> = Some("Alice");
+    let mut query = users::table.into_boxed();
+    if let Some(name) = needle {
+        query = query.filter(users::name.eq(name));
+    }
+
+    let names: Vec<String> = query
+        .select(users::name)
+        .order(users::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(names, vec!["Alice"]);
+
+    // Same query type with no filter should return all rows.
+    let all: Vec<String> = users::table
+        .into_boxed()
+        .select(users::name)
+        .order(users::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(all, vec!["Alice", "Bob", "Charlie"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// `.first().optional()`: explicit Some/None for "row may or may not exist".
+#[tokio::test]
+async fn test_first_optional() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    let absent: Option<User> = users::table.find(99).first(&mut conn).await.optional()?;
+    assert!(absent.is_none());
+
+    diesel::insert_into(users::table)
+        .values(users::name.eq("Eve"))
+        .execute(&mut conn)
+        .await?;
+
+    let present: Option<User> = users::table.first(&mut conn).await.optional()?;
+    let present = present.expect("a user was just inserted");
+    assert_eq!(present.name, "Eve");
+
+    drop(conn);
+    Ok(())
+}
+
+// EXISTS subquery: filter users by whether a matching post exists.
+#[tokio::test]
+async fn test_exists_subquery() -> QueryResult<()> {
+    use diesel::dsl::exists;
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    for n in &["Author", "Reader"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+    let users_list = users::table
+        .order(users::id.asc())
+        .load::<User>(&mut conn)
+        .await?;
+
+    diesel::insert_into(posts::table)
+        .values(&NewPost {
+            title: "P",
+            body: "x",
+            published: true,
+            user_id: users_list[0].id,
+            created_at: now,
+        })
+        .execute(&mut conn)
+        .await?;
+
+    let with_posts: Vec<String> = users::table
+        .filter(exists(posts::table.filter(posts::user_id.eq(users::id))))
+        .select(users::name)
+        .load(&mut conn)
+        .await?;
+    assert_eq!(with_posts, vec!["Author"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// IN-subquery: `users.id IN (SELECT posts.user_id FROM posts)`.
+#[tokio::test]
+async fn test_in_subquery() -> QueryResult<()> {
+    let mut conn = connection().await;
+    let now = chrono::Utc::now().naive_utc();
+
+    for n in &["A", "B", "C"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+    let users_list = users::table
+        .order(users::id.asc())
+        .load::<User>(&mut conn)
+        .await?;
+
+    // Only A and C have posts; B does not.
+    for &i in &[0usize, 2] {
+        diesel::insert_into(posts::table)
+            .values(&NewPost {
+                title: "P",
+                body: "x",
+                published: true,
+                user_id: users_list[i].id,
+                created_at: now,
+            })
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let names: Vec<String> = users::table
+        .filter(users::id.eq_any(posts::table.select(posts::user_id)))
+        .select(users::name)
+        .order(users::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(names, vec!["A", "C"]);
+
+    drop(conn);
+    Ok(())
+}
+
+// LIKE pattern matching via `TextExpressionMethods::like`.
+#[tokio::test]
+async fn test_like_pattern_matching() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    for n in &["Alice", "Alex", "Bob"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let starts_with_a: Vec<String> = users::table
+        .filter(users::name.like("A%"))
+        .select(users::name)
+        .order(users::name.asc())
+        .load(&mut conn)
+        .await?;
+    assert_eq!(starts_with_a, vec!["Alex", "Alice"]);
+
+    let three_letters: Vec<String> = users::table
+        .filter(users::name.like("___"))
+        .select(users::name)
+        .load(&mut conn)
+        .await?;
+    assert_eq!(three_letters, vec!["Bob"]);
+
+    drop(conn);
+    Ok(())
+}
+
+#[derive(diesel::QueryableByName, Debug, PartialEq)]
+struct WindowRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    id: i32,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    rn: i64,
+}
+
+// Window functions via `sql_query` + `QueryableByName`. Diesel's typed window
+// DSL is more involved; this is a smoke test that turso evaluates the OVER
+// clause and that diesel deserializes the result.
+#[tokio::test]
+async fn test_window_function_row_number() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    for n in &["X", "Y", "Z"] {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(n))
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let rows: Vec<WindowRow> = diesel::sql_query(
+        "SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM users ORDER BY id",
+    )
+    .load(&mut conn)
+    .await?;
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].rn, 1);
+    assert_eq!(rows[1].rn, 2);
+    assert_eq!(rows[2].rn, 3);
 
     drop(conn);
     Ok(())
