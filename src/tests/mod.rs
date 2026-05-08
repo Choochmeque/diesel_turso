@@ -1905,6 +1905,51 @@ async fn test_returning_insert_update_delete() -> QueryResult<()> {
     Ok(())
 }
 
+// `.execute()` on a column-producing statement (e.g. `RETURNING *`) must
+// drain rows without materializing them — the caller only consumes
+// `changes`. Drive `UPDATE … RETURNING *` through the binding-level
+// `TursoConnection::execute` and assert the returned `TursoResult` has
+// no rows/column_names (proxy for "didn't buffer the result set").
+#[tokio::test]
+async fn test_execute_on_returning_does_not_materialize_rows() -> QueryResult<()> {
+    let mut conn = connection().await;
+
+    for i in 0..10 {
+        diesel::insert_into(users::table)
+            .values(users::name.eq(format!("drain-{i}")))
+            .execute(&mut conn)
+            .await?;
+    }
+
+    // Reach into the binding layer to observe what `execute()` produced
+    // before diesel-async strips it down to `changes`.
+    let raw = conn
+        .connection
+        .as_ref()
+        .expect("turso connection initialized");
+    let mut stmt = raw.prepare("UPDATE users SET name = 'X' RETURNING id, name");
+    stmt.bind(Vec::new());
+    let result = raw
+        .execute(&stmt)
+        .await
+        .expect("UPDATE … RETURNING via execute()");
+
+    assert_eq!(result.changes, 10, "should report 10 rows updated");
+    assert!(
+        result.rows.is_empty(),
+        "execute() must not materialize rows from RETURNING; got {} rows",
+        result.rows.len(),
+    );
+    assert!(
+        result.column_names.is_empty(),
+        "execute() must not propagate columns from RETURNING; got {:?}",
+        result.column_names,
+    );
+
+    drop(conn);
+    Ok(())
+}
+
 // `.execute()` on a statement that carries a RETURNING clause is routed
 // through `TursoConnection::query()` (because the prepared statement has
 // output columns), so the affected-row count must come from

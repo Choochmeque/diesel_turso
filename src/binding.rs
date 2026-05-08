@@ -121,11 +121,18 @@ impl TursoConnection {
         // If the prepared statement produces result columns (SELECT, PRAGMA
         // with output, INSERT/UPDATE/DELETE … RETURNING, …) we can't call
         // `Statement::execute` on it — turso surfaces the first stepped row
-        // as a `Misuse("unexpected row …")` error. Detect via column metadata
-        // at prepare time and re-use the same prepared statement through
-        // the row-stepping path instead of preparing a second time.
+        // as a `Misuse("unexpected row …")` error. Step through and
+        // *discard* rows rather than materializing them: the caller of
+        // `execute()` only consumes `changes`, so an
+        // `UPDATE … RETURNING *` over a large table doesn't have to buffer
+        // every row in memory.
         if !prepared.columns().is_empty() {
-            return Self::step_rows(prepared, stmt.binds.clone()).await;
+            let changes = Self::drain_rows(prepared, stmt.binds.clone()).await?;
+            return Ok(TursoResult {
+                column_names: Arc::from([]),
+                rows: Vec::new(),
+                changes,
+            });
         }
 
         let params: Vec<Value> = stmt.binds.clone();
@@ -155,10 +162,26 @@ impl TursoConnection {
         Self::step_rows(prepared, stmt.binds.clone()).await
     }
 
+    /// Step through a prepared row-producing statement to completion,
+    /// discarding rows. Used by `execute()` when the statement happens to
+    /// produce columns (e.g. `INSERT/UPDATE/DELETE … RETURNING`) — the
+    /// caller only wants the affected-row count, so buffering rows would
+    /// waste memory for `RETURNING *` over large updates.
+    async fn drain_rows(
+        mut prepared: Statement,
+        params: Vec<Value>,
+    ) -> Result<usize, turso::Error> {
+        let mut rows_iter = prepared.query(params).await?;
+        while rows_iter.next().await?.is_some() {}
+        let changes = prepared.n_change();
+        usize::try_from(changes).map_err(|_| {
+            turso::Error::ConversionFailure(format!("rows_affected ({changes}) exceeds usize::MAX"))
+        })
+    }
+
     /// Step through a prepared row-producing statement and assemble a
-    /// `TursoResult`. Shared by `query()` (the load path) and the
-    /// `execute()` re-route for RETURNING / SELECT statements, so the
-    /// re-routed path doesn't have to prepare twice.
+    /// `TursoResult`. Used by `query()` (the load path) where the caller
+    /// actually consumes rows.
     async fn step_rows(
         mut prepared: Statement,
         params: Vec<Value>,
