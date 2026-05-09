@@ -63,15 +63,6 @@ impl TursoDatabase {
 }
 
 impl TursoConnection {
-    #[allow(clippy::unused_self)]
-    pub fn prepare(&self, query: &str) -> TursoPreparedStatement {
-        TursoPreparedStatement {
-            sql: query.to_string(),
-            binds: Vec::new(),
-            cacheable: true,
-        }
-    }
-
     /// Enable or disable routing through turso's prepared-statement cache
     /// for future `prepare_one` calls. turso has no public API to evict
     /// entries already cached on its connection, so flipping this to
@@ -198,6 +189,17 @@ impl TursoConnection {
 }
 
 impl TursoPreparedStatement {
+    /// Construct a carrier for a SQL string. No preparation happens here —
+    /// this is just a builder. Actual `Statement` creation (cached or
+    /// not) is deferred to [`TursoConnection::prepare_one`].
+    pub fn new(sql: &str) -> Self {
+        Self {
+            sql: sql.to_string(),
+            binds: Vec::new(),
+            cacheable: true,
+        }
+    }
+
     /// Mark this statement as not safe for prepared-statement caching,
     /// mirroring diesel's `QueryFragment::is_safe_to_cache_prepared`.
     pub const fn set_cacheable(&mut self, cacheable: bool) -> &mut Self {

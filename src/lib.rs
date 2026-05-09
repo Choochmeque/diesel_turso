@@ -1,6 +1,6 @@
 use backend::TursoBackend;
 use bind_collector::TursoBindCollector;
-use binding::{TursoConnection, TursoDatabase};
+use binding::{TursoConnection, TursoDatabase, TursoPreparedStatement};
 use diesel::{
     connection::{
         get_default_instrumentation, CacheSize, Instrumentation, InstrumentationEvent,
@@ -83,7 +83,7 @@ impl SimpleAsyncConnection for AsyncTursoConnection {
 
         let result = async {
             let conn = self.ensure_connection()?;
-            let stmt = conn.prepare(query);
+            let stmt = TursoPreparedStatement::new(query);
             conn.execute_batch(&stmt).await.map_err(|e| {
                 diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::UnableToSendCommand,
@@ -135,7 +135,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
 
             let opened = async {
                 let conn = self.ensure_connection()?;
-                let mut stmt = conn.prepare(&sql);
+                let mut stmt = TursoPreparedStatement::new(&sql);
                 stmt.bind(binds);
                 stmt.set_cacheable(cacheable);
                 conn.open_stream(&stmt).await.map_err(|e| {
@@ -236,7 +236,7 @@ impl AsyncConnectionCore for AsyncTursoConnection {
 
             let result = async {
                 let conn = self.ensure_connection()?;
-                let mut stmt = conn.prepare(&sql);
+                let mut stmt = TursoPreparedStatement::new(&sql);
                 stmt.bind(binds);
                 stmt.set_cacheable(cacheable);
                 conn.execute(&stmt).await.map(|r| r.changes).map_err(|e| {

@@ -28,6 +28,7 @@
 //! `AstPass`, and the `diesel_derives::__diesel_for_each_tuple!` macro.
 
 use crate::backend::TursoBackend;
+use crate::binding::TursoPreparedStatement;
 use crate::AsyncTursoConnection;
 use diesel::insertable::{
     CanInsertInSingleQuery, ColumnInsertValue, DefaultableColumnInsertValue, InsertValues,
@@ -274,7 +275,7 @@ where
                 let mut total = 0usize;
                 for (sql, binds) in prepared {
                     let inner = conn.ensure_connection()?;
-                    let mut prep = inner.prepare(&sql);
+                    let mut prep = TursoPreparedStatement::new(&sql);
                     prep.bind(binds);
                     // Each per-row SQL is unique-ish (default columns
                     // vary) and we already paid the prepare cost above
