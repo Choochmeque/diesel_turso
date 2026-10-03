@@ -1240,7 +1240,7 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
         .load::<(i32, i64)>(&mut conn)
         .await?;
 
-    assert!(!post_counts.is_empty());
+    assert_ne!(post_counts, [] as [(i32, i64); 0]);
 
     let users_with_multiple_posts = posts::table
         .group_by(posts::user_id)
@@ -1249,7 +1249,7 @@ async fn test_distinct_and_grouping() -> QueryResult<()> {
         .load::<i32>(&mut conn)
         .await?;
 
-    assert!(!users_with_multiple_posts.is_empty());
+    assert_ne!(users_with_multiple_posts, [] as [i32; 0]);
 
     drop(conn);
     Ok(())
