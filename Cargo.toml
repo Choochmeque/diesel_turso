@@ -20,12 +20,12 @@ r2d2 = [
 ]
 
 [dependencies]
-diesel = { version = "2.3", features = [
+diesel = { version = "2.4", features = [
     "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
 ] }
-diesel_derives = "2.3"
-diesel_migrations = "2.3"
-diesel-async = "0.9"
+diesel_derives = "2.4"
+diesel_migrations = "2.4"
+diesel-async = "0.10"
 futures-util = "0.3.31"
 chrono = { version = "0.4", optional = true }
 turso = { git = "https://github.com/tursodatabase/turso", rev = "62d71a1" }
