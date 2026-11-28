@@ -51,6 +51,8 @@ impl SqlDialect for TursoBackend {
     type ConcatClause = sql_dialect::concat_clause::ConcatWithPipesClause;
     type DefaultValueClauseForInsert = sql_dialect::default_value_clause::AnsiDefaultValueClause;
 
+    type BatchUpdateSupport = sql_dialect::batch_update_support::DoesNotSupportBatchUpdate;
+
     type EmptyFromClauseSyntax = sql_dialect::from_clause_syntax::AnsiSqlFromClauseSyntax;
     type SelectStatementSyntax = sql_dialect::select_statement_syntax::AnsiSqlSelectStatement;
 
@@ -66,6 +68,9 @@ impl SqlDialect for TursoBackend {
         sql_dialect::aggregate_function_expressions::PostgresLikeAggregateFunctionExpressions;
     type BuiltInWindowFunctionRequireOrder =
         sql_dialect::built_in_window_function_require_order::NoOrderRequired;
+
+    type SqlFunctionParameterNotation =
+        sql_dialect::sql_function_parameter_notation::PositionalNotationOnly;
 }
 
 impl DieselReserveSpecialization for TursoBackend {}

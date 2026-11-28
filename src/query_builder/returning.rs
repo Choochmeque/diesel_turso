@@ -1,5 +1,5 @@
 use crate::backend::{SqliteReturningClause, TursoBackend};
-use diesel::query_builder::ReturningClause;
+use diesel::query_builder::returning::ReturningClause;
 use diesel::query_builder::{AstPass, QueryFragment};
 use diesel::result::QueryResult;
 

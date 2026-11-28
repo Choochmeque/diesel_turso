@@ -186,7 +186,7 @@ macro_rules! impl_contains_defaultable_value {
     }
 }
 
-diesel_derives::__diesel_for_each_tuple!(tuple_impls);
+diesel::for_each_tuple!(tuple_impls);
 
 // Dispatcher — see module-level doc. Picks `(Yes, …)` (per-row) or
 // `(No, …)` (single-statement `VALUES (…), (…)`) based on whether any
